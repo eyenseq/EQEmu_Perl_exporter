@@ -1,2 +1,3 @@
 # EQEmu_Perl_exporter
-Block style click to add edit variables..BETA
+Python Block style click to add edit variables..BETA 
+py npc.py
