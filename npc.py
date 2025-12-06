@@ -1290,38 +1290,45 @@ class BlockPropertyEditor(QtWidgets.QWidget):
 
     def _build_for_form(self, block: Block):
         var_edit = QtWidgets.QLineEdit(block.params.get("var_name", "$i"))
-        start_edit = QtWidgets.QSpinBox()
-        end_edit = QtWidgets.QSpinBox()
-        step_edit = QtWidgets.QSpinBox()
+        start_spin = QtWidgets.QSpinBox()
+        end_spin = QtWidgets.QSpinBox()
+        step_spin = QtWidgets.QSpinBox()
 
-        start_edit.setRange(-10_000_000, 10_000_000)
-        end_edit.setRange(-10_000_000, 10_000_000)
-        step_edit.setRange(1, 10_000_000)
+        start_spin.setRange(-10_000_000, 10_000_000)
+        end_spin.setRange(-10_000_000, 10_000_000)
+        step_spin.setRange(1, 10_000_000)
 
-        start_edit.setValue(int(block.params.get("start", 0)))
-        end_edit.setValue(int(block.params.get("end", 10)))
-        step_edit.setValue(int(block.params.get("step", 1)))
+        # Safe coercion for displaying in spin boxes
+        def _to_int_default(val, default):
+            try:
+                return int(str(val).replace("_", ""))
+            except ValueError:
+                return default
+
+        start_val = block.params.get("start", 0)
+        end_val   = block.params.get("end", 10)
+        step_val  = 1  # we only store full inc_expr; spin is just a helper
+
+        start_spin.setValue(_to_int_default(start_val, 0))
+        end_spin.setValue(_to_int_default(end_val, 10))
+        step_spin.setValue(_to_int_default(step_val, 1))
 
         self.add_labeled_widget("Loop Var", var_edit)
-        self.add_labeled_widget("Start", start_edit)
-        self.add_labeled_widget("End", end_edit)
-        self.add_labeled_widget("Step", step_edit)
+        self.add_labeled_widget("Start (display only)", start_spin)
+        self.add_labeled_widget("End (display only)", end_spin)
+        self.add_labeled_widget("Step (display only)", step_spin)
 
         def update():
             block.params["var_name"] = var_edit.text()
-            block.params["start"] = start_edit.value()
-            block.params["end"] = end_edit.value()
-            block.params["step"] = step_edit.value()
+            # IMPORTANT: we do *not* overwrite start/end if they were expressions.
+            # This form is mostly cosmetic for imported loops.
             block.label = (
-                f'for ({var_edit.text()}={start_edit.value()}..'
-                f'{end_edit.value()} step {step_edit.value()})'
+                f'for ({block.params["var_name"]}={start_val}..{end_val} '
+                f'{block.params.get("cmp_op","<=")} {block.params.get("inc_expr","++")})'
             )
             self.block_changed.emit(block)
 
         var_edit.textChanged.connect(lambda _: update())
-        start_edit.valueChanged.connect(lambda _: update())
-        end_edit.valueChanged.connect(lambda _: update())
-        step_edit.valueChanged.connect(lambda _: update())
 
     def _build_foreach_form(self, block: Block):
         var_edit = QtWidgets.QLineEdit(block.params.get("var_name", "$x"))
@@ -1371,15 +1378,25 @@ class BlockPropertyEditor(QtWidgets.QWidget):
 
     def _build_my_var_form(self, block: Block):
         name_edit = QtWidgets.QLineEdit(block.params.get("var_name", "$myvar"))
-        value_edit = QtWidgets.QLineEdit(block.params.get("value", "0"))
+        value_edit = QtWidgets.QLineEdit(block.params.get("value", ""))
 
         self.add_labeled_widget("Var name", name_edit)
-        self.add_labeled_widget("Value (Perl)", value_edit)
+        self.add_labeled_widget("Value (Perl / list expr)", value_edit)
 
         def update():
             block.params["var_name"] = name_edit.text()
-            block.params["value"] = value_edit.text()
-            block.label = f"my {name_edit.text()} = {value_edit.text()}"
+            val = value_edit.text()
+            # store value only if non-empty
+            if val.strip():
+                block.params["value"] = val
+            else:
+                block.params.pop("value", None)
+
+            # label: "my $x" or "my @a = (...)" etc.
+            if val.strip():
+                block.label = f"my {name_edit.text()} = {val}"
+            else:
+                block.label = f"my {name_edit.text()}"
             self.block_changed.emit(block)
 
         name_edit.textChanged.connect(lambda _: update())
@@ -1387,19 +1404,28 @@ class BlockPropertyEditor(QtWidgets.QWidget):
 
     def _build_our_var_form(self, block: Block):
         name_edit = QtWidgets.QLineEdit(block.params.get("var_name", "$OurVar"))
-        value_edit = QtWidgets.QLineEdit(block.params.get("value", "0"))
+        value_edit = QtWidgets.QLineEdit(block.params.get("value", ""))
 
         self.add_labeled_widget("Var name", name_edit)
-        self.add_labeled_widget("Value (Perl)", value_edit)
+        self.add_labeled_widget("Value (Perl / list expr)", value_edit)
 
         def update():
             block.params["var_name"] = name_edit.text()
-            block.params["value"] = value_edit.text()
-            block.label = f"our {name_edit.text()} = {value_edit.text()}"
+            val = value_edit.text()
+            if val.strip():
+                block.params["value"] = val
+            else:
+                block.params.pop("value", None)
+
+            if val.strip():
+                block.label = f"our {name_edit.text()} = {val}"
+            else:
+                block.label = f"our {name_edit.text()}"
             self.block_changed.emit(block)
 
         name_edit.textChanged.connect(lambda _: update())
         value_edit.textChanged.connect(lambda _: update())
+
 
     def _build_plugin_form(self, block: Block):
         plugins = self.registry.list_plugins()
@@ -1533,6 +1559,50 @@ def parse_perl_to_blocks(perl_text: str,
             stack[-1].children.append(b)
         else:
             blocks.append(b)
+    
+    # --- State for multi-line my/our declarations like:
+    #     my @arr = (
+    #         "foo",
+    #         "bar",
+    #     );
+    multiline_decl_kind: Optional[str] = None   # "my" or "our"
+    multiline_var_name: Optional[str] = None    # e.g. "@funny_buff_quotes"
+    multiline_lines: List[str] = []             # full lines including indentation
+
+    def flush_multiline_decl():
+        nonlocal multiline_decl_kind, multiline_var_name, multiline_lines
+        if not multiline_decl_kind or not multiline_var_name or not multiline_lines:
+            multiline_decl_kind = None
+            multiline_var_name = None
+            multiline_lines = []
+            return
+
+        # Build the RHS as a single text blob.
+        # Easiest is: everything after " = " across all lines.
+        # For simplicity, we just join the lines as-is and let the generator add a trailing ';'.
+        value_text = "\n".join(multiline_lines).strip()
+
+        block_type = BLOCK_MY_VAR if multiline_decl_kind == "my" else BLOCK_OUR_VAR
+
+        params = {
+            "var_name": multiline_var_name,
+            "value": value_text,  # includes the "(\n ...\n);" part; resulting code will be valid even with ";;"
+        }
+
+        label = f"{multiline_decl_kind} {multiline_var_name} = ( ... )"
+
+        b = Block(
+            type=block_type,
+            label=label,
+            params=params,
+            children=[]
+        )
+        add_block(b)
+
+        multiline_decl_kind = None
+        multiline_var_name = None
+        multiline_lines = []
+
 
     # Prebuild regex patterns for plugins, if registry is given
     plugin_patterns = []
@@ -1605,12 +1675,26 @@ def parse_perl_to_blocks(perl_text: str,
     re_while     = re.compile(r'^while\s*\((.+)\)\s*{')
     re_foreach   = re.compile(r'^foreach\s+my\s+(\$\w+)\s*\((.+)\)\s*{$')
     re_for       = re.compile(
-        r'^for\s*\(\s*my\s+(\$\w+)\s*=\s*([^;]+);\s*\1\s*<=\s*([^;]+);\s*\1\s*\+=\s*([^)]+)\)\s*{'
+        r'^for\s*\(\s*my\s+(\$\w+)\s*=\s*([^;]+);\s*'   # init: my $i = START
+        r'\1\s*(<=|<)\s*([^;]+);\s*'                    # cond:  $i < END  or $i <= END
+        r'\1\s*(\+\+|\-\-|\+=\s*[^)]+|-=\s*[^)]+)\s*\)\s*{'  # inc: $i++, $i--, $i += step, $i -= step
     )
     re_quest     = re.compile(r'^quest::(\w+)\((.*)\);')
     re_settimer  = re.compile(r'^quest::settimer\(\s*"([^"]+)"\s*,\s*([0-9_]+)\s*\);')
-    re_my        = re.compile(r'^my\s+(\$\w+)\s*=\s*(.+);')
-    re_our       = re.compile(r'^our\s+(\$\w+)\s*=\s*(.+);')
+    re_my  = re.compile(
+        r'^my\s+([\$\@\%]\w+)\s*'          # var name: $foo, @list, %hash
+        r'(?:=\s*(.+?))?'                  # optional RHS, non-greedy
+        r';\s*(?:#.*)?$'                   # semicolon, optional spaces, optional comment
+    )
+    re_multiline_decl_start = re.compile(
+        r'^(my|our)\s+([\$\@\%]\w+)\s*=\s*\(\s*$'
+    )
+
+    re_our = re.compile(
+        r'^our\s+([\$\@\%]\w+)\s*'
+        r'(?:=\s*(.+?))?'
+        r';\s*(?:#.*)?$'
+    )
     re_setvar    = re.compile(r'^(\$\w+)\s*=\s*(.+);')
     re_bucket_set    = re.compile(r'^\$npc->SetBucket\("([^"]+)"\s*,\s*"([^"]*)"\);')
     re_bucket_get    = re.compile(r'^(\$\w+)\s*=\s*\$npc->GetBucket\("([^"]+)"\);')
@@ -1622,6 +1706,15 @@ def parse_perl_to_blocks(perl_text: str,
         line = raw.rstrip("\n")
         stripped = line.strip()
 
+        # --- If we're in the middle of a multi-line declaration, keep accumulating
+        if multiline_decl_kind is not None:
+            multiline_lines.append(line)
+            # End when we hit a line ending with ');'
+            if stripped.endswith(");"):
+                flush_multiline_decl()
+            # Either way, skip the rest of the parsing for this line
+            continue
+            
         if not stripped:
             flush_comment()
             continue
@@ -1640,6 +1733,19 @@ def parse_perl_to_blocks(perl_text: str,
             continue
 
         # --- sub EVENT_* { ... } ---
+        # --- Start of a multi-line my/our declaration?
+        m = re_multiline_decl_start.match(stripped)
+        if m:
+            # Flush any pending comments before we start the declaration
+            flush_comment()
+            multiline_decl_kind = m.group(1)      # "my" or "our"
+            multiline_var_name = m.group(2)       # e.g. "@funny_buff_quotes"
+            multiline_lines = [line]              # include this header line
+            # If someone wrote everything on one line (rare), we can still end it
+            if stripped.endswith(");"):
+                flush_multiline_decl()
+            continue
+        
         m = re_sub_event.match(stripped)
         if m:
             event_name = m.group(1)
@@ -1721,29 +1827,32 @@ def parse_perl_to_blocks(perl_text: str,
 
         m = re_for.match(stripped)
         if m:
-            var_name, start, end, step = m.groups()
+            var_name, start, cmp_op, end_expr, inc_expr = m.groups()
             start = start.strip()
-            end   = end.strip()
-            step  = step.strip()
+            end_expr = end_expr.strip()
+            cmp_op = cmp_op.strip()
+            inc_expr = inc_expr.strip()  # "++", "--", "+= 2", etc.
 
+            # Try to turn the numeric-looking pieces into ints, leave expressions as-is
             def _to_int_or_str(s: str):
+                s_clean = s.replace("_", "").strip()
                 try:
-                    return int(s.replace("_", ""))
+                    return int(s_clean)
                 except ValueError:
-                    return s
+                    return s.strip()
 
             start_v = _to_int_or_str(start)
-            end_v   = _to_int_or_str(end)
-            step_v  = _to_int_or_str(step)
+            end_v   = _to_int_or_str(end_expr)
 
             b = Block(
                 type=BLOCK_FOR,
-                label=f"for ({var_name}={start}..{end} step {step})",
+                label=f"for ({var_name}={start}..{end_expr} {cmp_op} {inc_expr})",
                 params={
                     "var_name": var_name,
                     "start": start_v,
                     "end": end_v,
-                    "step": step_v,
+                    "cmp_op": cmp_op,     # "<" or "<="
+                    "inc_expr": inc_expr  # "++", "+= 2", etc.
                 },
                 children=[]
             )
@@ -1783,12 +1892,21 @@ def parse_perl_to_blocks(perl_text: str,
         # --- my / our / var assignment ---
         m = re_my.match(stripped)
         if m:
-            var_name, value = m.groups()
-            value = value.strip()
+            var_name = m.group(1)
+            value = (m.group(2) or "").strip()  # optional RHS
+
+            params = {"var_name": var_name}
+            if value:
+                params["value"] = value
+
+            label = f"my {var_name}"
+            if value:
+                label += f" = {value}"
+
             b = Block(
                 type=BLOCK_MY_VAR,
-                label=f"my {var_name} = {value}",
-                params={"var_name": var_name, "value": value},
+                label=label,
+                params=params,
                 children=[]
             )
             add_block(b)
@@ -1796,12 +1914,21 @@ def parse_perl_to_blocks(perl_text: str,
 
         m = re_our.match(stripped)
         if m:
-            var_name, value = m.groups()
-            value = value.strip()
+            var_name = m.group(1)
+            value = (m.group(2) or "").strip()
+
+            params = {"var_name": var_name}
+            if value:
+                params["value"] = value
+
+            label = f"our {var_name}"
+            if value:
+                label += f" = {value}"
+
             b = Block(
                 type=BLOCK_OUR_VAR,
-                label=f"our {var_name} = {value}",
-                params={"var_name": var_name, "value": value},
+                label=label,
+                params=params,
                 children=[]
             )
             add_block(b)
@@ -1998,13 +2125,19 @@ def generate_perl(blocks: List[Block], plugins: PluginRegistry, npc_id: Optional
 
         elif t == BLOCK_MY_VAR:
             var_name = block.params.get("var_name", "$myvar")
-            value = block.params.get("value", "0")
-            emit(f"my {var_name} = {value};", indent)
+            value = str(block.params.get("value", "")).strip()
+            if value:
+                emit(f"my {var_name} = {value};", indent)
+            else:
+                emit(f"my {var_name};", indent)
 
         elif t == BLOCK_OUR_VAR:
             var_name = block.params.get("var_name", "$OurVar")
-            value = block.params.get("value", "0")
-            emit(f"our {var_name} = {value};", indent)
+            value = str(block.params.get("value", "")).strip()
+            if value:
+                emit(f"our {var_name} = {value};", indent)
+            else:
+                emit(f"our {var_name};", indent)
 
         elif t == BLOCK_SET_BUCKET:
             key = block.params.get("key", "my_bucket")
@@ -2027,10 +2160,26 @@ def generate_perl(blocks: List[Block], plugins: PluginRegistry, npc_id: Optional
 
         elif t == BLOCK_FOR:
             var_name = block.params.get("var_name", "$i")
-            start = int(block.params.get("start", 0))
-            end = int(block.params.get("end", 10))
-            step = int(block.params.get("step", 1))
-            emit(f'for (my {var_name} = {start}; {var_name} <= {end}; {var_name} += {step}) {{', indent)
+
+            start = block.params.get("start", 0)
+            end   = block.params.get("end", 10)
+            cmp_op = block.params.get("cmp_op", "<=")
+            inc_expr = block.params.get("inc_expr")
+
+            # Fallbacks as text
+            start_s = str(start)
+            end_s   = str(end)
+
+            if not inc_expr:
+                # Default to "++"
+                inc_expr = "++"
+
+            emit(
+                f'for (my {var_name} = {start_s}; '
+                f'{var_name} {cmp_op} {end_s}; '
+                f'{var_name}{inc_expr}) {{',
+                indent
+            )
             for child in block.children:
                 render_block(child, indent + 1)
             emit("}", indent)
