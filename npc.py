@@ -385,6 +385,8 @@ DEFAULT_COMMON_EVENTS = [
 ]
 
 EVENT_CONFIG_FILE = "events.json"
+SCRIPT_STATE_FILE = "script_state.json"
+
 
 
 # -------------------------
@@ -411,6 +413,8 @@ BLOCK_METHOD      = "method_call"
 BLOCK_QUEST_CALL  = "quest_call"
 BLOCK_MY_VAR      = "my_var"
 BLOCK_OUR_VAR     = "our_var"
+BLOCK_NEXT        = "next"
+BLOCK_ARRAY_ASSIGN = "array_assign"
 
 
 @dataclass
@@ -799,11 +803,13 @@ class BlockPalette(QtWidgets.QListWidget):
             ("WHILE", BLOCK_WHILE),
             ("FOR", BLOCK_FOR),
             ("FOREACH", BLOCK_FOREACH),
+            ("NEXT", BLOCK_NEXT),
             ("RETURN", BLOCK_RETURN),
             ("COMMENT", BLOCK_COMMENT),
             ("MY VAR", BLOCK_MY_VAR),
             ("OUR VAR", BLOCK_OUR_VAR),
             ("SET VAR", BLOCK_SET_VAR),
+            ("ARRAY/HASH ASSIGN", BLOCK_ARRAY_ASSIGN),
             ("SET BUCKET", BLOCK_SET_BUCKET),
             ("GET BUCKET", BLOCK_GET_BUCKET),
             ("DELETE BUCKET", BLOCK_DELETE_BUCKET),
@@ -879,6 +885,8 @@ class ScriptTree(QtWidgets.QTreeWidget):
             return "for (...)"
         if block_type == BLOCK_FOREACH:
             return "foreach my $x (@list)"
+        if block_type == BLOCK_NEXT:
+            return "next"
         if block_type == BLOCK_RETURN:
             return "return"
         if block_type == BLOCK_COMMENT:
@@ -889,6 +897,8 @@ class ScriptTree(QtWidgets.QTreeWidget):
             return "our $var = value"
         if block_type == BLOCK_SET_VAR:
             return "Set $var = value"
+        if block_type == BLOCK_ARRAY_ASSIGN:
+            return "$hash{$key} = value"
         if block_type == BLOCK_SET_BUCKET:
             return "Set bucket"
         if block_type == BLOCK_GET_BUCKET:
@@ -1023,6 +1033,8 @@ class ScriptTree(QtWidgets.QTreeWidget):
 class BlockPropertyEditor(QtWidgets.QWidget):
     """
     Right: show/edit parameters for the selected block.
+    Cleaner layout with form-style rows, multi-line editors,
+    and a help footer per block.
     """
     block_changed = QtCore.pyqtSignal(object)  # Block
 
@@ -1040,43 +1052,68 @@ class BlockPropertyEditor(QtWidgets.QWidget):
         outer.addWidget(self.scroll)
 
         self.inner = QtWidgets.QWidget()
-        self.layout = QtWidgets.QVBoxLayout(self.inner)
-        self.layout.setContentsMargins(6, 4, 6, 4)
-        self.layout.setSpacing(4)
+        self.form = QtWidgets.QFormLayout(self.inner)
+        self.form.setContentsMargins(8, 6, 8, 6)
+        self.form.setSpacing(6)
+        self.form.setLabelAlignment(
+            QtCore.Qt.AlignmentFlag.AlignRight | QtCore.Qt.AlignmentFlag.AlignTop
+        )
+        self.form.setFormAlignment(
+            QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignTop
+        )
 
         self.scroll.setWidget(self.inner)
         self.clear_form()
-        
-        self.setStyleSheet("""
-        QLineEdit, QSpinBox, QComboBox, QPlainTextEdit {
-            padding: 2px;
-            margin: 0px;
-        }
-        QLabel {
-            padding: 0px;
-            margin: 0px;
-        }
-        """)
 
+    # ---------- helpers ----------
+
+    def _make_header(self, text: str) -> None:
+        lbl = QtWidgets.QLabel(f"<b>{text}</b>")
+        lbl.setTextFormat(QtCore.Qt.TextFormat.RichText)
+        lbl.setAlignment(QtCore.Qt.AlignmentFlag.AlignLeft)
+        self.form.addRow(lbl)
+
+        line = QtWidgets.QFrame()
+        line.setFrameShape(QtWidgets.QFrame.Shape.HLine)
+        line.setFrameShadow(QtWidgets.QFrame.Shadow.Sunken)
+        self.form.addRow(line)
+
+    def _make_code_editor(self, text: str, min_height: int = 80) -> QtWidgets.QPlainTextEdit:
+        edit = QtWidgets.QPlainTextEdit(text)
+        edit.setLineWrapMode(QtWidgets.QPlainTextEdit.LineWrapMode.NoWrap)
+        edit.setTabChangesFocus(False)
+        edit.setMinimumHeight(min_height)
+        font = QtGui.QFont("Consolas", 9)
+        edit.setFont(font)
+        return edit
 
     def add_labeled_widget(self, title: str, widget: QtWidgets.QWidget):
-        lbl = QtWidgets.QLabel(title)
-        lbl.setStyleSheet("margin: 0px; padding: 0px;")  # remove extra height
-        widget.setStyleSheet("margin-bottom: 2px;")      # small separation below the box
+        label = QtWidgets.QLabel(title)
+        label.setWordWrap(True)
+        self.form.addRow(label, widget)
 
-        self.layout.addWidget(lbl)
-        self.layout.addWidget(widget)
+    def _set_footer(self, text: str):
+        if not text:
+            return
+        footer = QtWidgets.QLabel(text)
+        footer.setWordWrap(True)
+        footer.setStyleSheet(
+            "color: #9aa0a6; font-size: 11px; margin-top: 8px; margin-bottom: 2px;"
+        )
+        self.form.addRow(footer)
 
     def clear_form(self):
-        while self.layout.count():
-            item = self.layout.takeAt(0)
+        while self.form.count():
+            item = self.form.takeAt(0)
             w = item.widget()
             if w:
                 w.deleteLater()
 
-        label = QtWidgets.QLabel("Select a block to edit its properties.")
-        label.setWordWrap(True)
-        self.layout.addWidget(label)
+        placeholder = QtWidgets.QLabel("Select a block in the script to edit its properties.")
+        placeholder.setWordWrap(True)
+        self.form.addRow(placeholder)
+
+    # ---------- public API ----------
 
     def set_block(self, block: Optional[Block]):
         self.block = block
@@ -1084,105 +1121,94 @@ class BlockPropertyEditor(QtWidgets.QWidget):
         if not block:
             return
 
-        self.layout.addWidget(QtWidgets.QLabel(f"<b>{block.type}</b>"))
+        # Header
+        self._make_header(block.type)
 
+        # Label / title
         edit_label = QtWidgets.QLineEdit(block.label)
-        self.add_labeled_widget("Label", edit_label)
+        self.add_labeled_widget("Display label", edit_label)
 
-        def on_label_changed(text):
+        def on_label_changed(text: str):
             block.label = text
             self.block_changed.emit(block)
 
         edit_label.textChanged.connect(on_label_changed)
 
+        # Per-block UI
         if block.type in (BLOCK_EVENT,):
             self._build_event_form(block)
+            footer = "EVENT blocks become Perl subroutines (sub EVENT_*). Child blocks run when that event fires in EQEmu."
         elif block.type in (BLOCK_IF, BLOCK_ELSIF):
             self._build_if_form(block)
+            footer = "Condition is raw Perl (you can use $client, $npc, $text, etc.). Child blocks only run when this expression is true."
         elif block.type == BLOCK_WHILE:
             self._build_while_form(block)
+            footer = "Simple while-loop. Be careful not to create infinite loops; they will lock the quest script."
         elif block.type == BLOCK_SET_VAR:
             self._build_set_var_form(block)
+            footer = "Assign a Perl variable. Value is a Perl expression, not a literal string unless quoted."
+        elif block.type == BLOCK_ARRAY_ASSIGN:
+            self._build_array_assign_form(block)
+            footer = "Assign into a hash/array slot, e.g. $hash{$key} or $array[$i]."
         elif block.type == BLOCK_MY_VAR:
             self._build_my_var_form(block)
+            footer = "Declares a lexical variable (my). Good for local state inside an EVENT or control block."
         elif block.type == BLOCK_OUR_VAR:
             self._build_our_var_form(block)
+            footer = "Declares a package-level variable (our). Use sparingly for globals shared across subs."
+        elif block.type == BLOCK_NEXT:
+            self._build_next_form(block)
+            footer = "Skips to the next iteration of the nearest loop. Optional suffix like 'unless $cond' is appended verbatim."
         elif block.type == BLOCK_SET_BUCKET:
             self._build_set_bucket_form(block)
+            footer = 'Stores a string value into an EQEmu NPC bucket (quest::set_data style). Key is global within the NPC scope.'
         elif block.type == BLOCK_GET_BUCKET:
             self._build_get_bucket_form(block)
+            footer = "Reads a bucket into a variable. You are responsible for casting / parsing the string value."
         elif block.type == BLOCK_DELETE_BUCKET:
             self._build_delete_bucket_form(block)
+            footer = "Deletes the named bucket key, if it exists."
         elif block.type == BLOCK_TIMER:
             self._build_timer_form(block)
+            footer = "Convenience wrapper for quest::settimer(name, seconds). Use matching EVENT_TIMER blocks in the script."
         elif block.type == BLOCK_FOR:
             self._build_for_form(block)
+            footer = "Classic C-style for loop. Good for counting or iterating explicit ranges."
         elif block.type == BLOCK_FOREACH:
             self._build_foreach_form(block)
+            footer = "foreach over a list or keys of a hash. List expression can be multi-line Perl if needed."
         elif block.type == BLOCK_PLUGIN:
             self._build_plugin_form(block)
+            footer = "Renders a call into one of your JSON-described plugins. Parameters are filled into the Perl template."
         elif block.type == BLOCK_QUEST_CALL:
             self._build_quest_form(block)
+            footer = "Direct quest:: call. Arguments are raw Perl (strings must be quoted). Multi-line is allowed."
         elif block.type == BLOCK_RETURN:
             self._build_return_form(block)
+            footer = "Return from the current subroutine. Optional value is inserted verbatim."
         elif block.type == BLOCK_COMMENT:
             self._build_comment_form(block)
+            footer = "Pure comments. Multi-line text is emitted as # lines in the generated Perl."
         elif block.type == BLOCK_RAW_PERL:
             self._build_raw_perl_form(block)
+            footer = "Raw Perl lines copied directly into the output. Use this when the block-based model is too limiting."
         elif block.type == BLOCK_METHOD:
             self._build_method_form(block)
+            footer = "Builds $target->method(args). Arguments can be multi-line Perl for complex calls."
+        else:
+            footer = ""
 
-    # --- Specific forms ---
+        self._set_footer(footer)
 
-    def _build_quest_form(self, block: Block):
-        # Common quest commands you’re likely to use a lot
-        quest_cmds = [
-            "say",
-            "emote",
-            "shout",
-            "ze",          # zone emote
-            "we",          # world emote
-            "ding",
-            "summonitem",
-            "spawn2",
-            "unique_spawn",
-            "signalwith",
-            "setglobal",
-            "delglobal",
-            "set_data",
-            "delete_data",
-            "settimer",
-            "stoptimer",
-            "movepc",
-        ]
-
-        combo = QtWidgets.QComboBox()
-        combo.addItems(quest_cmds)
-        combo.setCurrentText(block.params.get("quest_fn", "say"))
-        self.add_labeled_widget("quest::", combo)
-
-        # Raw perl args
-        args_edit = QtWidgets.QLineEdit(block.params.get("args", '"Hello, world!"'))
-        self.add_labeled_widget("Args (Perl)", args_edit)
-
-        def update():
-            fn = combo.currentText()
-            args = args_edit.text()
-            block.params["quest_fn"] = fn
-            block.params["args"] = args
-            block.label = f"quest::{fn}({args})"
-            self.block_changed.emit(block)
-
-        combo.currentTextChanged.connect(lambda _: update())
-        args_edit.textChanged.connect(lambda _: update())
+    # ---------- specific forms ----------
 
     def _build_event_form(self, block: Block):
         event_type_box = QtWidgets.QComboBox()
         event_type_box.addItems(NPC_EVENTS)
         event_type_box.setCurrentText(block.params.get("event_name", "EVENT_SAY"))
-        self.add_labeled_widget("Event", event_type_box)
+        self.add_labeled_widget("Event name", event_type_box)
 
-        def on_event_changed(text):
+        def on_event_changed(text: str):
             block.params["event_name"] = text
             block.label = text
             self.block_changed.emit(block)
@@ -1190,49 +1216,138 @@ class BlockPropertyEditor(QtWidgets.QWidget):
         event_type_box.currentTextChanged.connect(on_event_changed)
 
     def _build_if_form(self, block: Block):
-        expr_edit = QtWidgets.QLineEdit(block.params.get("expr", '$text =~ /hail/i'))
-        self.add_labeled_widget("Condition (Perl)", expr_edit)
+        expr_edit = self._make_code_editor(
+            block.params.get("expr", '$text =~ /hail/i'),
+            min_height=80,
+        )
+        self.add_labeled_widget("Condition (Perl expression)", expr_edit)
 
-        def on_expr_change(text):
+        def on_expr_change():
+            text = expr_edit.toPlainText().strip()
             block.params["expr"] = text
-            block.label = f"{'if' if block.type == BLOCK_IF else 'elsif'} ({text})"
+            prefix = "if" if block.type == BLOCK_IF else "elsif"
+            block.label = f"{prefix} ({text})" if text else f"{prefix} (...)"
             self.block_changed.emit(block)
 
         expr_edit.textChanged.connect(on_expr_change)
 
     def _build_while_form(self, block: Block):
-        expr_edit = QtWidgets.QLineEdit(block.params.get("expr", "1"))
-        self.add_labeled_widget("Condition (Perl)", expr_edit)
+        expr_edit = self._make_code_editor(
+            block.params.get("expr", "1"),
+            min_height=60,
+        )
+        self.add_labeled_widget("Loop condition (Perl)", expr_edit)
 
-        def on_expr_change(text):
+        def on_expr_change():
+            text = expr_edit.toPlainText().strip()
             block.params["expr"] = text
-            block.label = f"while ({text})"
+            block.label = f"while ({text})" if text else "while (...)"
             self.block_changed.emit(block)
 
         expr_edit.textChanged.connect(on_expr_change)
 
     def _build_set_var_form(self, block: Block):
         name_edit = QtWidgets.QLineEdit(block.params.get("var_name", "$myvar"))
-        value_edit = QtWidgets.QLineEdit(block.params.get("value", "0"))
+        value_edit = self._make_code_editor(block.params.get("value", "0"), min_height=60)
 
-        self.add_labeled_widget("Var name", name_edit)
-        self.add_labeled_widget("Value (Perl)", value_edit)
+        self.add_labeled_widget("Variable name", name_edit)
+        self.add_labeled_widget("Value (Perl expression)", value_edit)
 
         def update():
             block.params["var_name"] = name_edit.text()
-            block.params["value"] = value_edit.text()
-            block.label = f"Set {name_edit.text()} = {value_edit.text()}"
+            value = value_edit.toPlainText()
+            block.params["value"] = value
+            block.label = f"Set {name_edit.text()} = {value}"
             self.block_changed.emit(block)
 
         name_edit.textChanged.connect(lambda _: update())
-        value_edit.textChanged.connect(lambda _: update())
+        value_edit.textChanged.connect(update)
+
+    def _build_array_assign_form(self, block: Block):
+        lhs_edit = QtWidgets.QLineEdit(block.params.get("lhs", "$hash{$key}"))
+        value_edit = self._make_code_editor(block.params.get("value", "0"), min_height=60)
+
+        self.add_labeled_widget("LHS (e.g. $hash{$key}, $array[$i])", lhs_edit)
+        self.add_labeled_widget("Value (Perl expression)", value_edit)
+
+        def update():
+            lhs = lhs_edit.text()
+            val = value_edit.toPlainText()
+            block.params["lhs"] = lhs
+            block.params["value"] = val
+            block.label = f"{lhs} = {val}"
+            self.block_changed.emit(block)
+
+        lhs_edit.textChanged.connect(lambda _: update())
+        value_edit.textChanged.connect(update)
+
+    def _build_my_var_form(self, block: Block):
+        name_edit = QtWidgets.QLineEdit(block.params.get("var_name", "$myvar"))
+        value_edit = self._make_code_editor(block.params.get("value", ""), min_height=80)
+
+        self.add_labeled_widget("Variable name (my $x, my @arr)", name_edit)
+        self.add_labeled_widget("Value (optional, multi-line OK)", value_edit)
+
+        def update():
+            block.params["var_name"] = name_edit.text()
+            val = value_edit.toPlainText()
+            if val.strip():
+                block.params["value"] = val
+                block.label = f"my {name_edit.text()} = {val}"
+            else:
+                block.params.pop("value", None)
+                block.label = f"my {name_edit.text()}"
+            self.block_changed.emit(block)
+
+        name_edit.textChanged.connect(lambda _: update())
+        value_edit.textChanged.connect(update)
+
+    def _build_our_var_form(self, block: Block):
+        name_edit = QtWidgets.QLineEdit(block.params.get("var_name", "$OurVar"))
+        value_edit = self._make_code_editor(block.params.get("value", ""), min_height=80)
+
+        self.add_labeled_widget("Variable name (our $Var)", name_edit)
+        self.add_labeled_widget("Value (optional, multi-line OK)", value_edit)
+
+        def update():
+            block.params["var_name"] = name_edit.text()
+            val = value_edit.toPlainText()
+            if val.strip():
+                block.params["value"] = val
+                block.label = f"our {name_edit.text()} = {val}"
+            else:
+                block.params.pop("value", None)
+                block.label = f"our {name_edit.text()}"
+            self.block_changed.emit(block)
+
+        name_edit.textChanged.connect(lambda _: update())
+        value_edit.textChanged.connect(update)
+
+    def _build_next_form(self, block: Block):
+        expr_edit = QtWidgets.QLineEdit(block.params.get("expr", ""))
+
+        self.add_labeled_widget(
+            "Condition suffix (e.g. 'unless $cond' or 'if $cond')",
+            expr_edit,
+        )
+
+        def on_change(text: str):
+            expr = text.strip()
+            block.params["expr"] = expr
+            label = "next"
+            if expr:
+                label += f" {expr}"
+            block.label = label
+            self.block_changed.emit(block)
+
+        expr_edit.textChanged.connect(on_change)
 
     def _build_set_bucket_form(self, block: Block):
         key_edit = QtWidgets.QLineEdit(block.params.get("key", "my_bucket"))
         value_edit = QtWidgets.QLineEdit(block.params.get("value", "1"))
 
-        self.add_labeled_widget("Bucket Key", key_edit)
-        self.add_labeled_widget("Value (string)", value_edit)
+        self.add_labeled_widget("Bucket key (string)", key_edit)
+        self.add_labeled_widget("Value (stored as string)", value_edit)
 
         def update():
             block.params["key"] = key_edit.text()
@@ -1247,8 +1362,8 @@ class BlockPropertyEditor(QtWidgets.QWidget):
         key_edit = QtWidgets.QLineEdit(block.params.get("key", "my_bucket"))
         var_edit = QtWidgets.QLineEdit(block.params.get("var_name", "$value"))
 
-        self.add_labeled_widget("Bucket Key", key_edit)
-        self.add_labeled_widget("Store in Var", var_edit)
+        self.add_labeled_widget("Bucket key to read", key_edit)
+        self.add_labeled_widget("Store result in variable", var_edit)
 
         def update():
             block.params["key"] = key_edit.text()
@@ -1261,7 +1376,7 @@ class BlockPropertyEditor(QtWidgets.QWidget):
 
     def _build_delete_bucket_form(self, block: Block):
         key_edit = QtWidgets.QLineEdit(block.params.get("key", "my_bucket"))
-        self.add_labeled_widget("Bucket Key", key_edit)
+        self.add_labeled_widget("Bucket key to delete", key_edit)
 
         def update():
             block.params["key"] = key_edit.text()
@@ -1276,7 +1391,7 @@ class BlockPropertyEditor(QtWidgets.QWidget):
         sec_edit.setRange(0, 1_000_000)
         sec_edit.setValue(int(block.params.get("seconds", 10)))
 
-        self.add_labeled_widget("Timer Name", name_edit)
+        self.add_labeled_widget("Timer name", name_edit)
         self.add_labeled_widget("Seconds", sec_edit)
 
         def update():
@@ -1290,142 +1405,96 @@ class BlockPropertyEditor(QtWidgets.QWidget):
 
     def _build_for_form(self, block: Block):
         var_edit = QtWidgets.QLineEdit(block.params.get("var_name", "$i"))
-        start_spin = QtWidgets.QSpinBox()
-        end_spin = QtWidgets.QSpinBox()
-        step_spin = QtWidgets.QSpinBox()
-
-        start_spin.setRange(-10_000_000, 10_000_000)
-        end_spin.setRange(-10_000_000, 10_000_000)
-        step_spin.setRange(1, 10_000_000)
-
-        # Safe coercion for displaying in spin boxes
-        def _to_int_default(val, default):
-            try:
-                return int(str(val).replace("_", ""))
-            except ValueError:
-                return default
 
         start_val = block.params.get("start", 0)
-        end_val   = block.params.get("end", 10)
-        step_val  = 1  # we only store full inc_expr; spin is just a helper
+        end_val = block.params.get("end", 10)
+        cmp_op_val = block.params.get("cmp_op", "<=")
+        inc_expr_val = block.params.get("inc_expr", "++")
 
-        start_spin.setValue(_to_int_default(start_val, 0))
-        end_spin.setValue(_to_int_default(end_val, 10))
-        step_spin.setValue(_to_int_default(step_val, 1))
+        start_edit = QtWidgets.QLineEdit(str(start_val))
+        end_edit = QtWidgets.QLineEdit(str(end_val))
 
-        self.add_labeled_widget("Loop Var", var_edit)
-        self.add_labeled_widget("Start (display only)", start_spin)
-        self.add_labeled_widget("End (display only)", end_spin)
-        self.add_labeled_widget("Step (display only)", step_spin)
+        cmp_combo = QtWidgets.QComboBox()
+        cmp_combo.addItems(["<", "<=", ">", ">="])
+        idx = cmp_combo.findText(cmp_op_val)
+        if idx >= 0:
+            cmp_combo.setCurrentIndex(idx)
+
+        inc_edit = QtWidgets.QLineEdit(inc_expr_val)
+
+        self.add_labeled_widget("Loop variable", var_edit)
+        self.add_labeled_widget("Start value (Perl expression or number)", start_edit)
+        self.add_labeled_widget("End value (Perl expression or number)", end_edit)
+        self.add_labeled_widget("Comparison operator", cmp_combo)
+        self.add_labeled_widget("Increment expression (e.g. ++, += 2)", inc_edit)
 
         def update():
             block.params["var_name"] = var_edit.text()
-            # IMPORTANT: we do *not* overwrite start/end if they were expressions.
-            # This form is mostly cosmetic for imported loops.
-            block.label = (
-                f'for ({block.params["var_name"]}={start_val}..{end_val} '
-                f'{block.params.get("cmp_op","<=")} {block.params.get("inc_expr","++")})'
-            )
+            block.params["start"] = start_edit.text().strip()
+            block.params["end"] = end_edit.text().strip()
+            block.params["cmp_op"] = cmp_combo.currentText().strip()
+            block.params["inc_expr"] = inc_edit.text().strip() or "++"
+
+            start_s = block.params["start"]
+            end_s = block.params["end"]
+            cmp_op = block.params["cmp_op"]
+            inc_expr = block.params["inc_expr"]
+
+            block.label = f'for ({var_edit.text()} = {start_s}; {var_edit.text()} {cmp_op} {end_s}; {var_edit.text()}{inc_expr})'
             self.block_changed.emit(block)
 
         var_edit.textChanged.connect(lambda _: update())
+        start_edit.textChanged.connect(lambda _: update())
+        end_edit.textChanged.connect(lambda _: update())
+        cmp_combo.currentTextChanged.connect(lambda _: update())
+        inc_edit.textChanged.connect(lambda _: update())
 
     def _build_foreach_form(self, block: Block):
         var_edit = QtWidgets.QLineEdit(block.params.get("var_name", "$x"))
-        list_edit = QtWidgets.QLineEdit(block.params.get("list_expr", "@list"))
+        list_edit = self._make_code_editor(
+            block.params.get("list_expr", "@list"),
+            min_height=60,
+        )
 
-        self.add_labeled_widget("Loop Variable (e.g. $item)", var_edit)
-        self.add_labeled_widget("List Expression (e.g. @items or keys %hash)", list_edit)
+        self.add_labeled_widget("Loop variable (e.g. $item)", var_edit)
+        self.add_labeled_widget("List expression (e.g. @items or keys %hash)", list_edit)
 
         def update():
             block.params["var_name"] = var_edit.text()
-            block.params["list_expr"] = list_edit.text()
-            block.label = f"foreach my {var_edit.text()} ({list_edit.text()})"
+            block.params["list_expr"] = list_edit.toPlainText().strip()
+            block.label = f"foreach my {var_edit.text()} ({block.params['list_expr']})"
             self.block_changed.emit(block)
 
         var_edit.textChanged.connect(lambda _: update())
-        list_edit.textChanged.connect(lambda _: update())
+        list_edit.textChanged.connect(update)
 
     def _build_return_form(self, block: Block):
-        value_edit = QtWidgets.QLineEdit(block.params.get("value", ""))
+        value_edit = self._make_code_editor(block.params.get("value", ""), min_height=60)
         self.add_labeled_widget("Return value (optional)", value_edit)
 
         def update():
-            block.params["value"] = value_edit.text()
-            val = value_edit.text().strip()
+            val = value_edit.toPlainText().strip()
+            block.params["value"] = val
             block.label = f"return {val}" if val else "return"
             self.block_changed.emit(block)
 
-        value_edit.textChanged.connect(lambda _: update())
+        value_edit.textChanged.connect(update)
 
     def _build_comment_form(self, block: Block):
         text = block.params.get("text", "")
-        edit = QtWidgets.QPlainTextEdit(text)
+        edit = self._make_code_editor(text, min_height=80)
         self.add_labeled_widget("Comment text", edit)
 
         def on_change():
             t = edit.toPlainText()
             block.params["text"] = t
-            # label = first line trimmed
-            first_line = t.splitlines()[0] if t.splitlines() else ""
-            preview = first_line.strip()
-            if len(preview) > 40:
-                preview = preview[:37] + "..."
-            block.label = "# " + preview if preview else "# comment"
+            first = (t.splitlines()[0] if t.splitlines() else "").strip()
+            if len(first) > 40:
+                first = first[:37] + "..."
+            block.label = "# " + first if first else "# comment"
             self.block_changed.emit(block)
 
         edit.textChanged.connect(on_change)
-
-    def _build_my_var_form(self, block: Block):
-        name_edit = QtWidgets.QLineEdit(block.params.get("var_name", "$myvar"))
-        value_edit = QtWidgets.QLineEdit(block.params.get("value", ""))
-
-        self.add_labeled_widget("Var name", name_edit)
-        self.add_labeled_widget("Value (Perl / list expr)", value_edit)
-
-        def update():
-            block.params["var_name"] = name_edit.text()
-            val = value_edit.text()
-            # store value only if non-empty
-            if val.strip():
-                block.params["value"] = val
-            else:
-                block.params.pop("value", None)
-
-            # label: "my $x" or "my @a = (...)" etc.
-            if val.strip():
-                block.label = f"my {name_edit.text()} = {val}"
-            else:
-                block.label = f"my {name_edit.text()}"
-            self.block_changed.emit(block)
-
-        name_edit.textChanged.connect(lambda _: update())
-        value_edit.textChanged.connect(lambda _: update())
-
-    def _build_our_var_form(self, block: Block):
-        name_edit = QtWidgets.QLineEdit(block.params.get("var_name", "$OurVar"))
-        value_edit = QtWidgets.QLineEdit(block.params.get("value", ""))
-
-        self.add_labeled_widget("Var name", name_edit)
-        self.add_labeled_widget("Value (Perl / list expr)", value_edit)
-
-        def update():
-            block.params["var_name"] = name_edit.text()
-            val = value_edit.text()
-            if val.strip():
-                block.params["value"] = val
-            else:
-                block.params.pop("value", None)
-
-            if val.strip():
-                block.label = f"our {name_edit.text()} = {val}"
-            else:
-                block.label = f"our {name_edit.text()}"
-            self.block_changed.emit(block)
-
-        name_edit.textChanged.connect(lambda _: update())
-        value_edit.textChanged.connect(lambda _: update())
-
 
     def _build_plugin_form(self, block: Block):
         plugins = self.registry.list_plugins()
@@ -1434,9 +1503,7 @@ class BlockPropertyEditor(QtWidgets.QWidget):
         for p in plugins:
             combo.addItem(f"{p.name} ({p.plugin_id})", userData=p.plugin_id)
 
-        # Make sure plugin_params always exists
         block.params.setdefault("plugin_params", {})
-
         current_pid = block.params.get("plugin_id")
         if current_pid:
             idx = combo.findData(current_pid)
@@ -1445,17 +1512,16 @@ class BlockPropertyEditor(QtWidgets.QWidget):
 
         self.add_labeled_widget("Plugin", combo)
 
-        # Parameter widgets dynamic area
-        params_group = QtWidgets.QGroupBox("Parameters")
+        params_group = QtWidgets.QGroupBox("Plugin parameters")
         params_layout = QtWidgets.QFormLayout(params_group)
-        self.layout.addWidget(params_group)
+        self.form.addRow(params_group)
 
         def rebuild_params(pid: Optional[str]):
-            # clear old widgets
-            for i in reversed(range(params_layout.count())):
-                item = params_layout.takeAt(i)
-                if item.widget():
-                    item.widget().deleteLater()
+            while params_layout.count():
+                item = params_layout.takeAt(0)
+                w = item.widget()
+                if w:
+                    w.deleteLater()
 
             if not pid:
                 return
@@ -1470,26 +1536,22 @@ class BlockPropertyEditor(QtWidgets.QWidget):
                 name = p["name"]
                 label = p.get("label", name)
                 default = p.get("default", "")
-
-                # use stored value or fall back to default
                 val = plugin_params.get(name, default)
 
                 w = QtWidgets.QLineEdit(str(val))
                 params_layout.addRow(label, w)
 
                 def make_cb(param_name=name):
-                    def cb(text):
+                    def cb(text: str):
                         plugin_params[param_name] = text
                         self.block_changed.emit(block)
                     return cb
 
                 w.textChanged.connect(make_cb())
 
-        def on_plugin_changed(_text):
+        def on_plugin_changed(_text: str):
             pid = combo.currentData()
             block.params["plugin_id"] = pid
-
-            # When a plugin is picked, populate plugin_params with defaults
             plugin_params = {}
             if pid:
                 pdef = self.registry.get(pid)
@@ -1497,7 +1559,6 @@ class BlockPropertyEditor(QtWidgets.QWidget):
                     for p in pdef.params:
                         plugin_params[p["name"]] = p.get("default", "")
             block.params["plugin_params"] = plugin_params
-
             block.label = f"Plugin: {combo.currentText()}"
             self.block_changed.emit(block)
             rebuild_params(pid)
@@ -1505,11 +1566,10 @@ class BlockPropertyEditor(QtWidgets.QWidget):
         combo.currentTextChanged.connect(on_plugin_changed)
         rebuild_params(current_pid)
 
-
     def _build_raw_perl_form(self, block: Block):
         text = block.params.get("code", "# your perl here")
-        edit = QtWidgets.QPlainTextEdit(text)
-        self.add_labeled_widget("Raw Perl", edit)
+        edit = self._make_code_editor(text, min_height=150)
+        self.add_labeled_widget("Raw Perl block", edit)
 
         def on_change():
             block.params["code"] = edit.toPlainText()
@@ -1517,20 +1577,52 @@ class BlockPropertyEditor(QtWidgets.QWidget):
 
         edit.textChanged.connect(on_change)
 
+    def _build_quest_form(self, block: Block):
+        quest_cmds = [
+            "say", "emote", "shout", "ze", "we",
+            "ding", "summonitem", "spawn2", "unique_spawn",
+            "signalwith", "setglobal", "delglobal",
+            "set_data", "delete_data",
+            "settimer", "stoptimer",
+            "movepc",
+        ]
+
+        combo = QtWidgets.QComboBox()
+        combo.addItems(quest_cmds)
+        combo.setCurrentText(block.params.get("quest_fn", "say"))
+        self.add_labeled_widget("quest:: function", combo)
+
+        args_edit = self._make_code_editor(
+            block.params.get("args", '"Hello, world!"'),
+            min_height=80,
+        )
+        self.add_labeled_widget("Arguments (Perl, multi-line OK)", args_edit)
+
+        def update():
+            fn = combo.currentText()
+            args = args_edit.toPlainText()
+            block.params["quest_fn"] = fn
+            block.params["args"] = args
+            block.label = f"quest::{fn}({args})"
+            self.block_changed.emit(block)
+
+        combo.currentTextChanged.connect(lambda _: update())
+        args_edit.textChanged.connect(update)
+
     def _build_method_form(self, block: Block):
         target_edit = QtWidgets.QLineEdit(block.params.get("target", "$client"))
         method_edit = QtWidgets.QLineEdit(block.params.get("method", "Message"))
-        args_edit = QtWidgets.QLineEdit(block.params.get("args", ""))
+        args_edit = self._make_code_editor(block.params.get("args", ""), min_height=80)
 
-        self.add_labeled_widget("Target (e.g. $client)", target_edit)
-        self.add_labeled_widget("Method", method_edit)
-        self.add_labeled_widget("Args (Perl)", args_edit)
+        self.add_labeled_widget("Target (e.g. $client, $npc)", target_edit)
+        self.add_labeled_widget("Method name", method_edit)
+        self.add_labeled_widget("Arguments (Perl, multi-line OK)", args_edit)
 
         def update():
             block.params["target"] = target_edit.text()
             block.params["method"] = method_edit.text()
-            block.params["args"] = args_edit.text()
-            args = args_edit.text().strip()
+            block.params["args"] = args_edit.toPlainText()
+            args = block.params["args"].strip()
             if args:
                 block.label = f'{block.params["target"]}->{block.params["method"]}({args})'
             else:
@@ -1539,7 +1631,7 @@ class BlockPropertyEditor(QtWidgets.QWidget):
 
         target_edit.textChanged.connect(lambda _: update())
         method_edit.textChanged.connect(lambda _: update())
-        args_edit.textChanged.connect(lambda _: update())
+        args_edit.textChanged.connect(update)
 
 
 # -------------------------
@@ -1577,24 +1669,13 @@ def parse_perl_to_blocks(perl_text: str,
             multiline_lines = []
             return
 
-        # Build the RHS as a single text blob.
-        # Easiest is: everything after " = " across all lines.
-        # For simplicity, we just join the lines as-is and let the generator add a trailing ';'.
-        value_text = "\n".join(multiline_lines).strip()
+        value_text = "\n".join(multiline_lines).rstrip()
 
-        block_type = BLOCK_MY_VAR if multiline_decl_kind == "my" else BLOCK_OUR_VAR
-
-        params = {
-            "var_name": multiline_var_name,
-            "value": value_text,  # includes the "(\n ...\n);" part; resulting code will be valid even with ";;"
-        }
-
-        label = f"{multiline_decl_kind} {multiline_var_name} = ( ... )"
-
+        # Represent as a single RAW_PERL block so code is preserved exactly
         b = Block(
-            type=block_type,
-            label=label,
-            params=params,
+            type=BLOCK_RAW_PERL,
+            label=f"Raw Perl ({multiline_decl_kind} {multiline_var_name} ...)",
+            params={"code": value_text},
             children=[]
         )
         add_block(b)
@@ -1602,6 +1683,7 @@ def parse_perl_to_blocks(perl_text: str,
         multiline_decl_kind = None
         multiline_var_name = None
         multiline_lines = []
+
 
 
     # Prebuild regex patterns for plugins, if registry is given
@@ -1701,6 +1783,10 @@ def parse_perl_to_blocks(perl_text: str,
     re_bucket_delete = re.compile(r'^\$npc->DeleteBucket\("([^"]+)"\);')
     re_method    = re.compile(r'^(\$\w+)->(\w+)\((.*)\);')
     re_return    = re.compile(r'^return\b(.*);?')
+    re_next      = re.compile(r'^next\b(.*);$')
+    re_array_assign = re.compile(r'^(\$\w+\s*\{\s*[^}]+\s*\})\s*=\s*(.+);$')
+
+
 
     for raw in lines:
         line = raw.rstrip("\n")
@@ -1746,9 +1832,11 @@ def parse_perl_to_blocks(perl_text: str,
                 flush_multiline_decl()
             continue
         
+            # --- next; / next unless ...; / next if ...; ---
         m = re_sub_event.match(stripped)
         if m:
-            event_name = m.group(1)
+            event_name = m.group(1).strip()
+
             b = Block(
                 type=BLOCK_EVENT,
                 label=event_name,
@@ -1757,6 +1845,21 @@ def parse_perl_to_blocks(perl_text: str,
             )
             add_block(b)
             stack.append(b)
+            continue
+
+        m = re_next.match(stripped)
+        if m:
+            suffix = m.group(1).strip()  # may be '', 'unless $cond', 'if $cond', etc.
+            label = "next"
+            if suffix:
+                label += f" {suffix}"
+            b = Block(
+                type=BLOCK_NEXT,
+                label=label,
+                params={"expr": suffix},
+                children=[]
+            )
+            add_block(b)
             continue
 
         # --- if / elsif / else / while / foreach / for ---
@@ -1970,6 +2073,20 @@ def parse_perl_to_blocks(perl_text: str,
             add_block(b)
             continue
 
+        m = re_array_assign.match(stripped)
+        if m:
+            lhs, value = m.groups()
+            lhs = lhs.strip()
+            value = value.strip()
+            b = Block(
+                type=BLOCK_ARRAY_ASSIGN,
+                label=f"{lhs} = {value}",
+                params={"lhs": lhs, "value": value},
+                children=[]
+            )
+            add_block(b)
+            continue
+
         # plain var assignment (fallback after my/our/buckets)
         m = re_setvar.match(stripped)
         if m:
@@ -2077,6 +2194,13 @@ def generate_perl(blocks: List[Block], plugins: PluginRegistry, npc_id: Optional
                 render_block(child, indent + 1)
             emit("}", indent)
             emit("", indent)
+        
+        elif t == BLOCK_NEXT:
+            expr = str(block.params.get("expr", "")).strip()
+            if expr:
+                emit(f"next {expr};", indent)
+            else:
+                emit("next;", indent)
 
         elif t == BLOCK_IF:
             expr = block.params.get("expr", "1")
@@ -2122,19 +2246,43 @@ def generate_perl(blocks: List[Block], plugins: PluginRegistry, npc_id: Optional
             var_name = block.params.get("var_name", "$myvar")
             value = block.params.get("value", "0")
             emit(f"{var_name} = {value};", indent)
+            
+        elif t == BLOCK_ARRAY_ASSIGN:
+            lhs = block.params.get("lhs", "$hash{$key}")
+            value = block.params.get("value", "0")
+            emit(f"{lhs} = {value};", indent)
 
         elif t == BLOCK_MY_VAR:
             var_name = block.params.get("var_name", "$myvar")
-            value = str(block.params.get("value", "")).strip()
-            if value:
+            value = block.params.get("value", "")
+
+            if value is None:
+                value = ""
+            value = str(value)
+
+            # Strip exactly ONE trailing semicolon if present
+            if value.rstrip().endswith(";"):
+                value = value.rstrip()
+                value = value[:-1].rstrip()
+
+            if value.strip():
                 emit(f"my {var_name} = {value};", indent)
             else:
                 emit(f"my {var_name};", indent)
 
         elif t == BLOCK_OUR_VAR:
             var_name = block.params.get("var_name", "$OurVar")
-            value = str(block.params.get("value", "")).strip()
-            if value:
+            value = block.params.get("value", "")
+
+            if value is None:
+                value = ""
+            value = str(value)
+
+            if value.rstrip().endswith(";"):
+                value = value.rstrip()
+                value = value[:-1].rstrip()
+
+            if value.strip():
                 emit(f"our {var_name} = {value};", indent)
             else:
                 emit(f"our {var_name};", indent)
@@ -2214,7 +2362,7 @@ def generate_perl(blocks: List[Block], plugins: PluginRegistry, npc_id: Optional
             except KeyError as e:
                 line = f"# [Plugin params missing: {e}]"
             emit(line, indent)
-
+       
         elif t == BLOCK_RAW_PERL:
             code = block.params.get("code", "").splitlines()
             for c in code:
@@ -2303,6 +2451,9 @@ class MainWindow(QtWidgets.QMainWindow):
         super().__init__()
         self.setWindowTitle("EQEmu Quest Builder")
         self.resize(1400, 750)
+        
+        # Track theme for persistence
+        self.current_theme = "dark"
 
         # Event lists (all vs “common” favorites for the menu)
         self.all_events = list(NPC_EVENTS)
@@ -2358,20 +2509,20 @@ class MainWindow(QtWidgets.QMainWindow):
         self.props = BlockPropertyEditor(self.registry)
 
         # Splitter so user can resize work area vs properties
-        right_splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal)
-        right_splitter.addWidget(self.script_tree)
-        right_splitter.addWidget(self.props)
+        self.right_splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal)
+        self.right_splitter.addWidget(self.script_tree)
+        self.right_splitter.addWidget(self.props)
 
         # Make script area dominate
-        right_splitter.setStretchFactor(0, 4)  # script tree
-        right_splitter.setStretchFactor(1, 1)  # properties
+        self.right_splitter.setStretchFactor(0, 4)  # script tree
+        self.right_splitter.setStretchFactor(1, 1)  # properties
 
         # Optional: set initial sizes (pixels)
-        right_splitter.setSizes([900, 300])  # adjust to taste
+        self.right_splitter.setSizes([900, 300])  # adjust to taste
 
         # Left: palette, Right: splitter (script + props)
         layout.addWidget(self.palette_tabs, 1)
-        layout.addWidget(right_splitter, 4)
+        layout.addWidget(self.right_splitter, 4)
 
         self.setCentralWidget(central)
 
@@ -2382,9 +2533,10 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self._create_menu()
 
-        # initial empty state
-        self._snapshot_state()
+        # initial state: either restore last session or start empty
+        self._load_script_state()
 
+    
     # --- Undo/Redo helpers ---
 
     def _serialize_state(self) -> str:
@@ -2401,6 +2553,113 @@ class MainWindow(QtWidgets.QMainWindow):
         state = self._serialize_state()
         self.undo_stack.append(state)
         self.redo_stack.clear()
+
+    def _save_script_state(self):
+        """
+        Persist script blocks + window layout to SCRIPT_STATE_FILE.
+        """
+        try:
+            # Blocks (as dicts)
+            blocks_json = json.loads(self._serialize_state())
+        except Exception:
+            blocks_json = []
+
+        # Window geometry/state
+        geom_ba = self.saveGeometry()
+        state_ba = self.saveState()
+
+        state = {
+            "blocks": blocks_json,
+            "geometry": bytes(geom_ba.toHex()).decode("ascii"),
+            "window_state": bytes(state_ba.toHex()).decode("ascii"),
+            "palette_tab": self.palette_tabs.currentIndex(),
+            "splitter_sizes": self.right_splitter.sizes(),
+            "theme": self.current_theme,
+        }
+
+        try:
+            with open(SCRIPT_STATE_FILE, "w", encoding="utf-8") as f:
+                json.dump(state, f, indent=2)
+        except Exception:
+            # Silent fail is fine here
+            pass
+
+
+    def _load_script_state(self):
+        """
+        Restore script blocks + window layout from SCRIPT_STATE_FILE if present.
+        """
+        if not os.path.exists(SCRIPT_STATE_FILE):
+            # Nothing saved, keep the empty initial state
+            self._snapshot_state()
+            return
+
+        try:
+            with open(SCRIPT_STATE_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception:
+            # Corrupt or unreadable state; start fresh
+            self._snapshot_state()
+            return
+
+        # Restore blocks
+        blocks_data = data.get("blocks")
+        if isinstance(blocks_data, list):
+            try:
+                blocks = [Block.from_dict(d) for d in blocks_data]
+                self.script_tree.load_from_blocks(blocks)
+                self.props.clear_form()
+            except Exception:
+                # If something blows up, just ignore and keep empty
+                self.script_tree.clear_script()
+                self.props.clear_form()
+
+        # Restore geometry
+        geom_hex = data.get("geometry")
+        if isinstance(geom_hex, str):
+            try:
+                ba = QtCore.QByteArray.fromHex(geom_hex.encode("ascii"))
+                self.restoreGeometry(ba)
+            except Exception:
+                pass
+
+        # Restore window state (menus/toolbars, if you add any later)
+        state_hex = data.get("window_state")
+        if isinstance(state_hex, str):
+            try:
+                ba = QtCore.QByteArray.fromHex(state_hex.encode("ascii"))
+                self.restoreState(ba)
+            except Exception:
+                pass
+
+        # Restore palette tab
+        idx = data.get("palette_tab")
+        if isinstance(idx, int) and 0 <= idx < self.palette_tabs.count():
+            self.palette_tabs.setCurrentIndex(idx)
+
+        # Restore splitter sizes
+        sizes = data.get("splitter_sizes")
+        if isinstance(sizes, list) and len(sizes) == 2:
+            try:
+                self.right_splitter.setSizes([int(sizes[0]), int(sizes[1])])
+            except Exception:
+                pass
+
+        # Restore theme
+        theme = data.get("theme")
+        app = QtWidgets.QApplication.instance()
+        if app is not None and theme in ("dark", "light"):
+            if theme == "dark":
+                apply_dark_theme(app)
+                self.current_theme = "dark"
+            else:
+                apply_light_theme(app)
+                self.current_theme = "light"
+
+        # Reset undo/redo stacks to this restored state
+        self.undo_stack.clear()
+        self.redo_stack.clear()
+        self._snapshot_state()
 
         # --- Event menu prefs ---
 
@@ -2510,6 +2769,12 @@ class MainWindow(QtWidgets.QMainWindow):
 
         act_dark.triggered.connect(self.on_set_dark_theme)
         act_light.triggered.connect(self.on_set_light_theme)
+        
+        # Tools menu: Perl syntax check
+        tools_menu = bar.addMenu("&Tools")
+        act_check_perl = tools_menu.addAction("Check Perl Syntax")
+        act_check_perl.setStatusTip("Run 'perl -c' on the generated script")
+        act_check_perl.triggered.connect(self.on_check_perl)
 
     # --- Undo / Redo actions ---
 
@@ -2534,11 +2799,13 @@ class MainWindow(QtWidgets.QMainWindow):
         app = QtWidgets.QApplication.instance()
         if app is not None:
             apply_dark_theme(app)
+        self.current_theme = "dark"
 
     def on_set_light_theme(self):
         app = QtWidgets.QApplication.instance()
         if app is not None:
             apply_light_theme(app)
+        self.current_theme = "light"
 
     def on_add_event(self, event_name: str):
         # Always top-level
@@ -2581,6 +2848,68 @@ class MainWindow(QtWidgets.QMainWindow):
         self.script_tree.update_item_label(block)
         self.props.set_block(block)
         self._snapshot_state()
+        
+    def on_check_perl(self):
+        """
+        Generate Perl and run 'perl -c' to check syntax.
+        Shows the combined stdout/stderr in a dialog.
+        """
+        blocks = self.script_tree.rebuild_block_tree()
+        perl = generate_perl(blocks, self.registry)
+
+        import subprocess
+
+        try:
+            proc = subprocess.run(
+                ["perl", "-c", "-"],
+                input=perl.encode("utf-8"),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                check=False,
+            )
+        except FileNotFoundError:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "Perl not found",
+                "Could not run 'perl -c'.\n\n"
+                "Make sure Perl is installed and available in your PATH."
+            )
+            return
+
+        output = proc.stdout.decode("utf-8", errors="ignore")
+
+        dlg = QtWidgets.QDialog(self)
+        dlg.setWindowTitle("Perl Syntax Check")
+        dlg.resize(800, 400)
+
+        layout = QtWidgets.QVBoxLayout(dlg)
+
+        text = QtWidgets.QPlainTextEdit()
+        text.setReadOnly(True)
+        text.setPlainText(output)
+        layout.addWidget(text)
+
+        status_label = QtWidgets.QLabel()
+        status_label.setTextFormat(QtCore.Qt.TextFormat.RichText)
+        if proc.returncode == 0:
+            status_label.setText(
+                "<b style='color:#0f9d58;'>Perl reports: syntax OK.</b>"
+            )
+        else:
+            status_label.setText(
+                "<b style='color:#ea4335;'>Perl reported syntax errors. "
+                "Scroll the output above to see details.</b>"
+            )
+        layout.addWidget(status_label)
+
+        btn_close = QtWidgets.QPushButton("Close")
+        btn_close.clicked.connect(dlg.accept)
+        layout.addWidget(
+            btn_close,
+            alignment=QtCore.Qt.AlignmentFlag.AlignRight
+        )
+
+        dlg.exec()
 
     def on_block_changed(self, block: Block):
         self.script_tree.update_item_label(block)
@@ -2678,6 +3007,13 @@ class MainWindow(QtWidgets.QMainWindow):
         dlg = PluginManagerDialog(self.registry, self)
         dlg.exec()
 
+    def closeEvent(self, event: QtGui.QCloseEvent):
+        # Save script + layout on exit
+        try:
+            self._save_script_state()
+        except Exception:
+            pass
+        super().closeEvent(event)
 
 # -------------------------
 # main
