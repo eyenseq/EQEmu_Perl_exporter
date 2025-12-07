@@ -2473,10 +2473,18 @@ class MainWindow(QtWidgets.QMainWindow):
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(10)
 
-        # Left: tabbed palette
-        self.flow_palette = BlockPalette()
+        # Left: tabbed palette (vertical tabs)
         self.palette_tabs = QtWidgets.QTabWidget()
+        self.palette_tabs.setTabPosition(QtWidgets.QTabWidget.TabPosition.West)
+        self.palette_tabs.setMovable(True)
+
+        # Flow tab (no search)
+        self.flow_palette = BlockPalette()
         self.palette_tabs.addTab(self.flow_palette, "Flow")
+
+        # Store method list widgets and their search boxes by category
+        self.method_lists: Dict[str, QtWidgets.QListWidget] = {}
+        self.method_search_boxes: Dict[str, QtWidgets.QLineEdit] = {}
 
         # Add method tabs for categories of interest
         desired_cats = [
@@ -2489,6 +2497,16 @@ class MainWindow(QtWidgets.QMainWindow):
             methods = self.methods_by_cat.get(cat, [])
             if not methods:
                 continue
+
+            container = QtWidgets.QWidget()
+            vbox = QtWidgets.QVBoxLayout(container)
+            vbox.setContentsMargins(4, 4, 4, 4)
+            vbox.setSpacing(4)
+
+            search = QtWidgets.QLineEdit()
+            search.setPlaceholderText(f"Search {cat.title()} methods...")
+            vbox.addWidget(search)
+
             lw = QtWidgets.QListWidget()
             lw.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.SingleSelection)
             for m in methods:
@@ -2500,18 +2518,55 @@ class MainWindow(QtWidgets.QMainWindow):
                 item.setData(QtCore.Qt.ItemDataRole.UserRole, (m.var, m.name, m.args))
                 lw.addItem(item)
             lw.itemDoubleClicked.connect(self.on_method_double_clicked)
-            self.palette_tabs.addTab(lw, cat.title())
+            vbox.addWidget(lw)
 
-        layout.addWidget(self.palette_tabs, 2)
+            # Filter for this tab
+            def make_filter(list_widget=lw):
+                def _filter(text: str):
+                    t = text.lower()
+                    for i in range(list_widget.count()):
+                        item = list_widget.item(i)
+                        item.setHidden(t not in item.text().lower())
+                return _filter
+
+            search.textChanged.connect(make_filter())
+
+            self.method_lists[cat] = lw
+            self.method_search_boxes[cat] = search
+
+            self.palette_tabs.addTab(container, cat.title())
+
 
         # Center/right
         self.script_tree = ScriptTree()
         self.props = BlockPropertyEditor(self.registry)
 
+        # --- Script search UI (center pane) ---
+        self.script_search_box = QtWidgets.QLineEdit()
+        self.script_search_box.setPlaceholderText("Search blocks by label...")
+        self.script_search_next = QtWidgets.QPushButton("Find next")
+
+        script_panel = QtWidgets.QWidget()
+        sp_layout = QtWidgets.QVBoxLayout(script_panel)
+        sp_layout.setContentsMargins(0, 0, 0, 0)
+        sp_layout.setSpacing(4)
+
+        search_bar = QtWidgets.QHBoxLayout()
+        search_bar.addWidget(self.script_search_box)
+        search_bar.addWidget(self.script_search_next)
+        sp_layout.addLayout(search_bar)
+        sp_layout.addWidget(self.script_tree)
+
         # Splitter so user can resize work area vs properties
         self.right_splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal)
-        self.right_splitter.addWidget(self.script_tree)
+        self.right_splitter.addWidget(script_panel)
         self.right_splitter.addWidget(self.props)
+
+        # Make script area dominate
+        self.right_splitter.setStretchFactor(0, 4)  # script tree
+        self.right_splitter.setStretchFactor(1, 1)  # properties
+        self.right_splitter.setSizes([900, 300])  # initial sizes
+
 
         # Make script area dominate
         self.right_splitter.setStretchFactor(0, 4)  # script tree
@@ -2530,11 +2585,69 @@ class MainWindow(QtWidgets.QMainWindow):
         self.flow_palette.block_selected.connect(self.on_palette_add_block)
         self.script_tree.selection_changed.connect(self.props.set_block)
         self.props.block_changed.connect(self.on_block_changed)
+        
+        # Search state for script tree
+        self.script_search_matches: List[QtWidgets.QTreeWidgetItem] = []
+        self.script_search_index: int = -1
+
+        self.script_search_box.textChanged.connect(self.on_script_search_changed)
+        self.script_search_next.clicked.connect(self.on_script_find_next)
 
         self._create_menu()
 
         # initial state: either restore last session or start empty
         self._load_script_state()
+
+    # --- Script tree search / highlight ---
+
+    def _clear_tree_highlights(self):
+        def visit(item: QtWidgets.QTreeWidgetItem):
+            item.setBackground(0, QtGui.QBrush())
+            for i in range(item.childCount()):
+                visit(item.child(i))
+
+        for i in range(self.script_tree.topLevelItemCount()):
+            visit(self.script_tree.topLevelItem(i))
+
+    def _collect_matching_items(self, text: str) -> List[QtWidgets.QTreeWidgetItem]:
+        matches: List[QtWidgets.QTreeWidgetItem] = []
+        if not text:
+            return matches
+        t = text.lower()
+
+        def visit(item: QtWidgets.QTreeWidgetItem):
+            if t in item.text(0).lower():
+                matches.append(item)
+            for i in range(item.childCount()):
+                visit(item.child(i))
+
+        for i in range(self.script_tree.topLevelItemCount()):
+            visit(self.script_tree.topLevelItem(i))
+        return matches
+
+    def on_script_search_changed(self, text: str):
+        self._clear_tree_highlights()
+        self.script_search_matches = self._collect_matching_items(text)
+        self.script_search_index = 0 if self.script_search_matches else -1
+
+        if not self.script_search_matches:
+            return
+
+        highlight_brush = QtGui.QBrush(QtGui.QColor(138, 180, 248, 60))
+        for item in self.script_search_matches:
+            item.setBackground(0, highlight_brush)
+
+        first = self.script_search_matches[0]
+        self.script_tree.setCurrentItem(first)
+        self.script_tree.scrollToItem(first)
+
+    def on_script_find_next(self):
+        if not self.script_search_matches:
+            return
+        self.script_search_index = (self.script_search_index + 1) % len(self.script_search_matches)
+        item = self.script_search_matches[self.script_search_index]
+        self.script_tree.setCurrentItem(item)
+        self.script_tree.scrollToItem(item)
 
     
     # --- Undo/Redo helpers ---
