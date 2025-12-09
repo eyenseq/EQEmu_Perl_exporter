@@ -1,3 +1,4 @@
 # EQEmu_Perl_exporter
 Python Block style click to add edit variables..BETA 
-py npc.py..ya I was sleepy and stoned when I named this will be changed in final
+py EQemu_script_builder.py
+This very close to final but everything seems to work. A lot of updates to how plugins are input. Included a seeded plugins.json with common plugins
