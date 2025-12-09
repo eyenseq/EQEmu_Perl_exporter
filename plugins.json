@@ -1,0 +1,446 @@
+{
+  "plugins": [
+    {
+      "plugin_id": "say_to_client",
+      "name": "Say To Client",
+      "category": "Chat",
+      "perl_template": "plugin::SayToClient($client, \"{message}\");",
+      "params": [
+        {
+          "name": "message",
+          "label": "Message",
+          "type": "str",
+          "default": "hi\nhello"
+        }
+      ]
+    },
+    {
+      "plugin_id": "handin_exact_coin_simple",
+      "name": "Handin Exact \u2013 Coin Scale (Simple)",
+      "category": "Handin",
+      "perl_template": "my ($id, $sets) = plugin::handin_exact(\n    {recipe}\n);\n\nif ($id && $sets > 0) {{\n{body_on_success}\n{rewards}\n}}\nelse {{\n    plugin::return_items(\\%itemcount);\n}}\n",
+      "params": [
+        {
+          "name": "recipe",
+          "label": "Recipe hash (Perl)",
+          "type": "str",
+          "default": "{ id => 'bones10p', req => { coin_scale => 10, no_items => 1 } }"
+        },
+        {
+          "name": "body_on_success",
+          "label": "Body to execute on success (can be multiline, use $sets)",
+          "type": "str",
+          "default": "    quest::say(\"Thanks for $sets x 10 platinum!\");\n    quest::exp(100 * $sets);"
+        },
+        {
+          "name": "rewards",
+          "label": "Reward lines (e.g. quest::summonitem(...); can be multiline)",
+          "type": "str",
+          "default": "    quest::summonitem(13073, 10 * $sets);"
+        }
+      ]
+    },
+    {
+      "plugin_id": "handin_exact_coin_item_combo",
+      "name": "Handin Exact \u2013 Coin Scale + Item",
+      "category": "Handin",
+      "perl_template": "my ($id, $sets) = plugin::handin_exact(\n    {recipe}\n);\n\nif ($id && $sets > 0) {{\n{body_on_success}\n{rewards}\n}}\nelse {{\n    plugin::return_items(\\%itemcount);\n}}\n",
+      "params": [
+        {
+          "name": "recipe",
+          "label": "Recipe hash (Perl)",
+          "type": "str",
+          "default": "{ id => 'item5p_combo', req => { coin_scale => 5, 1001 => 1 } }"
+        },
+        {
+          "name": "body_on_success",
+          "label": "Body to execute on success (can be multiline, use $sets)",
+          "type": "str",
+          "default": "    quest::say(\"You gave $sets x 5p and a token!\");\n    quest::exp(150 * $sets);"
+        },
+        {
+          "name": "rewards",
+          "label": "Reward lines (e.g. quest::summonitem(...); can be multiline)",
+          "type": "str",
+          "default": "    quest::summonitem(2001, $sets);"
+        }
+      ]
+    },
+    {
+      "plugin_id": "handin_exact_coin_tiered",
+      "name": "Handin Exact \u2013 Coin Scale (Tiered)",
+      "category": "Handin",
+      "perl_template": "my ($id, $sets) = plugin::handin_exact(\n    {recipe}\n);\n\nif ($id && $sets > 0) {{\n{body_on_success}\n{rewards}\n}}\nelse {{\n    plugin::return_items(\\%itemcount);\n}}\n",
+      "params": [
+        {
+          "name": "recipe",
+          "label": "Recipe hash (Perl)",
+          "type": "str",
+          "default": "{ id => 'tier25p', req => { coin_scale => 25, no_items => 1 } }"
+        },
+        {
+          "name": "body_on_success",
+          "label": "Body to execute on success (can be multiline, use $sets)",
+          "type": "str",
+          "default": "    if ($sets >= 4) {{\n        quest::say(\"Big spender! $sets x 25p!\");\n    }} else {{\n        quest::say(\"Thanks for $sets x 25p.\");\n    }}\n    quest::exp(200 * $sets);"
+        },
+        {
+          "name": "rewards",
+          "label": "Reward lines (e.g. quest::summonitem(...); can be multiline)",
+          "type": "str",
+          "default": "    if ($sets >= 4) {{\n        quest::summonitem(3003);\n    }} else {{\n        quest::summonitem(3002, $sets);\n    }}"
+        }
+      ]
+    },
+    {
+      "plugin_id": "handin_exact_items",
+      "name": "Handin Exact \u2013 Items Only",
+      "category": "Handin",
+      "perl_template": "my $id = plugin::handin_exact(\n    {recipe}\n);\n\nif ($id) {{\n{body_on_success}\n{rewards}\n}}\nelse {{\n    plugin::return_items(\\%itemcount);\n}}\n",
+      "params": [
+        {
+          "name": "recipe",
+          "label": "Recipe hash (Perl)",
+          "type": "str",
+          "default": "{ id => 'quest_scroll', req => { 1010 => 1, 1020 => 1 } }"
+        },
+        {
+          "name": "body_on_success",
+          "label": "Body to execute on success (can be multiline)",
+          "type": "str",
+          "default": "    quest::say(\"Excellent, both scrolls!\");\n    quest::exp(500);"
+        },
+        {
+          "name": "rewards",
+          "label": "Reward lines (e.g. quest::summonitem(...); can be multiline)",
+          "type": "str",
+          "default": "    quest::summonitem(2005);"
+        }
+      ]
+    },
+    {
+      "plugin_id": "handin_exact_mixed_coins",
+      "name": "Handin Exact \u2013 Mixed Coins",
+      "category": "Handin",
+      "perl_template": "my $id = plugin::handin_exact(\n    {recipe}\n);\n\nif ($id) {{\n{body_on_success}\n{rewards}\n}}\nelse {{\n    plugin::return_items(\\%itemcount);\n}}\n",
+      "params": [
+        {
+          "name": "recipe",
+          "label": "Recipe hash (Perl)",
+          "type": "str",
+          "default": "{ id => 'mixed_coins', req => { platinum => 5, gold => 2, silver => 3, copper => 7 } }"
+        },
+        {
+          "name": "body_on_success",
+          "label": "Body to execute on success (can be multiline)",
+          "type": "str",
+          "default": "    quest::say(\"Perfect \u2014 exactly 5p, 2g, 3s, 7c!\");\n    quest::exp(200);"
+        },
+        {
+          "name": "rewards",
+          "label": "Reward lines (e.g. quest::summonitem(...); can be multiline)",
+          "type": "str",
+          "default": "    quest::summonitem(13073, 5);"
+        }
+      ]
+    },
+    {
+      "plugin_id": "return_items",
+      "name": "Return Items",
+      "category": "Inventory",
+      "perl_template": "plugin::return_items({returnitems});",
+      "params": [
+        {
+          "name": "returnitems",
+          "label": "Item Hash (usually \\%itemcount)",
+          "type": "str",
+          "default": "\\%itemcount"
+        }
+      ]
+    },
+    {
+      "plugin_id": "check_handin",
+      "name": "Check Handin (Items + Coins)",
+      "category": "Handin",
+      "perl_template": "if (plugin::check_handin(\\%itemcount, {reqs})) {{\n{body_on_success}\n{rewards}\n}}\nelse {{\n    plugin::return_items(\\%itemcount);\n}}\n",
+      "params": [
+        {
+          "name": "reqs",
+          "label": "Requirements (e.g. 1234 => 1, platinum => 10)",
+          "type": "str",
+          "default": "1234 => 1, platinum => 10"
+        },
+        {
+          "name": "body_on_success",
+          "label": "Body to execute on success (can be multiline)",
+          "type": "str",
+          "default": "    quest::say(\"Well done.\");"
+        },
+        {
+          "name": "rewards",
+          "label": "Reward lines (e.g. quest::summonitem(...); can be multiline)",
+          "type": "str",
+          "default": "    quest::summonitem(1001);"
+        }
+      ]
+    },
+    {
+      "plugin_id": "check_hasitem",
+      "name": "Check Has Item",
+      "category": "Handin",
+      "perl_template": "if (plugin::check_hasitem($client, {item_id})) {{\n{body}\n}}\n",
+      "params": [
+        {
+          "name": "item_id",
+          "label": "Item ID to check",
+          "type": "int",
+          "default": "1001"
+        },
+        {
+          "name": "body",
+          "label": "Body to execute when client has item",
+          "type": "str",
+          "default": "    quest::say(\"I see you have the item I requested.\");"
+        }
+      ]
+    },
+    {
+      "plugin_id": "quest_handin",
+      "name": "Quest Handin Helper",
+      "category": "Handin",
+      "perl_template": "plugin::quest_handin($client, \\%itemcount, {quest_id}, {reward_item}, {exp_amount});",
+      "params": [
+        {
+          "name": "quest_id",
+          "label": "Quest ID / Identifier (string or int)",
+          "type": "str",
+          "default": "\"epic_1_5_step_3\""
+        },
+        {
+          "name": "reward_item",
+          "label": "Reward Item ID",
+          "type": "int",
+          "default": "1001"
+        },
+        {
+          "name": "exp_amount",
+          "label": "Experience Reward (0 = none)",
+          "type": "int",
+          "default": "0"
+        }
+      ]
+    },
+    {
+      "plugin_id": "random_message",
+      "name": "Random Message",
+      "category": "Flavor",
+      "perl_template": "plugin::random_message($client, {messages});",
+      "params": [
+        {
+          "name": "messages",
+          "label": "Arrayref of messages (Perl code)",
+          "type": "str",
+          "default": "[\"Hello!\", \"Greetings, traveler.\", \"State your business.\"]"
+        }
+      ]
+    },
+    {
+      "plugin_id": "RandomRoam",
+      "name": "Random Roam",
+      "category": "Movement",
+      "perl_template": "plugin::RandomRoam({max_x}, {max_y}, {max_z}, {los_size});",
+      "params": [
+        {
+          "name": "max_x",
+          "label": "Max X variance",
+          "type": "int",
+          "default": "50"
+        },
+        {
+          "name": "max_y",
+          "label": "Max Y variance",
+          "type": "int",
+          "default": "50"
+        },
+        {
+          "name": "max_z",
+          "label": "Max Z variance",
+          "type": "int",
+          "default": "15"
+        },
+        {
+          "name": "los_size",
+          "label": "LoS mob size",
+          "type": "int",
+          "default": "5"
+        }
+      ]
+    },
+    {
+      "plugin_id": "power_source_total_purity",
+      "name": "Power Source Total Purity",
+      "category": "Scaling",
+      "perl_template": "my $total_purity = plugin::powersource_total_purity($client);",
+      "params": []
+    },
+    {
+      "plugin_id": "power_source_recalc",
+      "name": "Power Source Recalc (On Zone-In)",
+      "category": "Scaling",
+      "perl_template": "plugin::powersource_recalc($client);",
+      "params": []
+    },
+    {
+      "plugin_id": "scale_npc_by_era",
+      "name": "Scale NPC By Era",
+      "category": "Scaling",
+      "perl_template": "plugin::scale_npc_by_era($npc, {zone_short});",
+      "params": [
+        {
+          "name": "zone_short",
+          "label": "Zone shortname (optional, usually leave empty for auto)",
+          "type": "str",
+          "default": "\"\""
+        }
+      ]
+    },
+    {
+      "plugin_id": "saylink",
+      "name": "Saylink (Create)",
+      "category": "Chat",
+      "perl_template": "my $link = plugin::saylink({phrase}, 1); # 1 = underline",
+      "params": [
+        {
+          "name": "phrase",
+          "label": "Phrase for saylink",
+          "type": "str",
+          "default": "\"hail\""
+        }
+      ]
+    },
+    {
+      "plugin_id": "say_check",
+      "name": "Check Say Text (Simple)",
+      "category": "Chat",
+      "perl_template": "if (plugin::check_said($text, {match})) {{\n{body}\n}}\n",
+      "params": [
+        {
+          "name": "match",
+          "label": "Match text or regex (Perl fragment)",
+          "type": "str",
+          "default": "\"hail\""
+        },
+        {
+          "name": "body",
+          "label": "Body to execute on match",
+          "type": "str",
+          "default": "    quest::say(\"Well met, $name.\");"
+        }
+      ]
+    },
+    {
+      "plugin_id": "faction_reward",
+      "name": "Faction Reward",
+      "category": "Reward",
+      "perl_template": "plugin::FactionReward($client, {faction_id}, {amount});",
+      "params": [
+        {
+          "name": "faction_id",
+          "label": "Faction ID",
+          "type": "int",
+          "default": "42"
+        },
+        {
+          "name": "amount",
+          "label": "Faction change (+/-)",
+          "type": "int",
+          "default": "10"
+        }
+      ]
+    },
+    {
+      "plugin_id": "give_exp",
+      "name": "Grant Experience",
+      "category": "Reward",
+      "perl_template": "plugin::GiveEXP($client, {exp_amount});",
+      "params": [
+        {
+          "name": "exp_amount",
+          "label": "Experience Amount",
+          "type": "int",
+          "default": "1000"
+        }
+      ]
+    },
+    {
+      "plugin_id": "give_cash",
+      "name": "Give Cash",
+      "category": "Reward",
+      "perl_template": "plugin::GiveCash($client, {pp}, {gp}, {sp}, {cp});",
+      "params": [
+        {
+          "name": "pp",
+          "label": "Platinum",
+          "type": "int",
+          "default": "0"
+        },
+        {
+          "name": "gp",
+          "label": "Gold",
+          "type": "int",
+          "default": "0"
+        },
+        {
+          "name": "sp",
+          "label": "Silver",
+          "type": "int",
+          "default": "0"
+        },
+        {
+          "name": "cp",
+          "label": "Copper",
+          "type": "int",
+          "default": "0"
+        }
+      ]
+    },
+    {
+      "plugin_id": "port_client",
+      "name": "Port Client (Zone + Coords)",
+      "category": "Utility",
+      "perl_template": "plugin::PortClient($client, {zone_short}, {x}, {y}, {z}, {h});",
+      "params": [
+        {
+          "name": "zone_short",
+          "label": "Zone short name",
+          "type": "str",
+          "default": "\"poknowledge\""
+        },
+        {
+          "name": "x",
+          "label": "X",
+          "type": "int",
+          "default": "0"
+        },
+        {
+          "name": "y",
+          "label": "Y",
+          "type": "int",
+          "default": "0"
+        },
+        {
+          "name": "z",
+          "label": "Z",
+          "type": "int",
+          "default": "0"
+        },
+        {
+          "name": "h",
+          "label": "Heading",
+          "type": "int",
+          "default": "0"
+        }
+      ]
+    }
+  ]
+}
