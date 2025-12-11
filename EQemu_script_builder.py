@@ -927,20 +927,69 @@ class BlockPalette(QtWidgets.QListWidget):
         block_type = item.data(QtCore.Qt.ItemDataRole.UserRole)
         self.block_selected.emit(block_type)
 
-
 class ScriptTree(QtWidgets.QTreeWidget):
     """
     Center: tree of blocks representing the script.
     Uses item.data(UserRole) to store/retrieve the Block.
     """
     selection_changed = QtCore.pyqtSignal(object)  # Block or None
+    structure_changed = QtCore.pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setHeaderHidden(True)
         self.setDragDropMode(QtWidgets.QAbstractItemView.DragDropMode.InternalMove)
 
+        # Enable drag & drop
+        self.setDragEnabled(True)
+        self.setAcceptDrops(True)
+        self.setDropIndicatorShown(True)
+
+        # Keep selection updates wired
         self.itemSelectionChanged.connect(self.on_selection_changed)
+
+        # Watch underlying model for structural changes (insert/move/remove)
+        model = self.model()
+        model.rowsInserted.connect(self._on_model_rows_changed)
+        model.rowsRemoved.connect(self._on_model_rows_changed)
+        # Internal moves fire rowsMoved, not inserted/removed
+        if hasattr(model, "rowsMoved"):
+            model.rowsMoved.connect(self._on_model_rows_moved)
+
+    # ---------- helpers ----------
+
+    def _emit_structure_changed(self):
+        """
+        Emit structure_changed *after* the model is fully updated.
+        Using singleShot(0, ...) keeps us safely after the drop/move.
+        """
+        QtCore.QTimer.singleShot(0, self.structure_changed.emit)
+
+    # ---------- model change handlers ----------
+
+    def _on_model_rows_changed(self, *args):
+        # rowsInserted / rowsRemoved
+        self._emit_structure_changed()
+
+    def _on_model_rows_moved(self, *args):
+        # Internal row moves
+        self._emit_structure_changed()
+
+    # ---------- drag & drop ----------
+
+    def dropEvent(self, event: QtGui.QDropEvent):
+        # Let the built-in behavior actually move the items
+        super().dropEvent(event)
+
+        # Re-emit selection changed for the new item position
+        item = self.currentItem()
+        block = item.data(0, QtCore.Qt.ItemDataRole.UserRole) if item else None
+        self.selection_changed.emit(block)
+
+        # Treat this as a structural change so undo/redo sees it
+        self._emit_structure_changed()
+
+    # ---------- existing API ----------
 
     def clear_script(self):
         self.clear()
@@ -1105,7 +1154,7 @@ class ScriptTree(QtWidgets.QTreeWidget):
                 self.takeTopLevelItem(idx)
 
         self.selection_changed.emit(None)
-        
+
     def contextMenuEvent(self, event: QtGui.QContextMenuEvent):
         item = self.itemAt(event.pos())
         menu = QtWidgets.QMenu(self)
@@ -1119,12 +1168,20 @@ class ScriptTree(QtWidgets.QTreeWidget):
         if not action:
             return
 
+        changed = False
+
         if action == act_add_if:
             self.add_block(BLOCK_IF, parent_item=item)
+            changed = True
         elif action == act_add_raw:
             self.add_block(BLOCK_RAW_PERL, parent_item=item)
+            changed = True
         elif action == act_delete:
             self.delete_current()
+            changed = True
+
+        if changed:
+            self._emit_structure_changed()
 
 # -------------------------
 # Block Property Editor
@@ -2607,7 +2664,7 @@ class MainWindow(QtWidgets.QMainWindow):
         # Undo / Redo stacks (structural changes only)
         self.undo_stack: List[str] = []
         self.redo_stack: List[str] = []
-
+      
         # Central layout: palettes (tabs) | script | props
         central = QtWidgets.QWidget()
         layout = QtWidgets.QHBoxLayout(central)
@@ -2688,6 +2745,8 @@ class MainWindow(QtWidgets.QMainWindow):
         # Center/right
         self.script_tree = ScriptTree()
         self.props = BlockPropertyEditor(self.registry)
+        
+        self.script_tree.structure_changed.connect(self._snapshot_state)
 
         # --- Script search UI (center pane) ---
         self.script_search_box = QtWidgets.QLineEdit()
@@ -2709,12 +2768,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self.right_splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal)
         self.right_splitter.addWidget(script_panel)
         self.right_splitter.addWidget(self.props)
-
-        # Make script area dominate
-        self.right_splitter.setStretchFactor(0, 4)  # script tree
-        self.right_splitter.setStretchFactor(1, 1)  # properties
-        self.right_splitter.setSizes([900, 300])  # initial sizes
-
 
         # Make script area dominate
         self.right_splitter.setStretchFactor(0, 4)  # script tree
@@ -2811,9 +2864,19 @@ class MainWindow(QtWidgets.QMainWindow):
         self.props.clear_form()
 
     def _snapshot_state(self):
+        """
+        Capture current script structure into the undo stack.
+        Avoid pushing duplicate consecutive states.
+        """
         state = self._serialize_state()
+
+        # If nothing has changed structurally, don't add a new undo step
+        if self.undo_stack and self.undo_stack[-1] == state:
+            return
+
         self.undo_stack.append(state)
         self.redo_stack.clear()
+
 
     def _save_script_state(self):
         """
@@ -3036,7 +3099,7 @@ class MainWindow(QtWidgets.QMainWindow):
         act_check_perl = tools_menu.addAction("Check Perl Syntax")
         act_check_perl.setStatusTip("Run 'perl -c' on the generated script")
         act_check_perl.triggered.connect(self.on_check_perl)
-
+   
     # --- Undo / Redo actions ---
 
     def on_undo(self):
@@ -3174,7 +3237,9 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def on_block_changed(self, block: Block):
         self.script_tree.update_item_label(block)
-        # Undo snapshots are structural only; we don't snapshot on every keystroke.
+        # Also capture this as an undo point
+        self._snapshot_state()
+
 
     def on_delete_block(self):
         self.script_tree.delete_current()
