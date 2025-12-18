@@ -15,136 +15,6 @@
       ]
     },
     {
-      "plugin_id": "handin_exact_coin_simple",
-      "name": "Handin Exact \u2013 Coin Scale (Simple)",
-      "category": "Handin",
-      "perl_template": "my ($id, $sets) = plugin::handin_exact(\n    {recipe}\n);\n\nif ($id && $sets > 0) {{\n{body_on_success}\n{rewards}\n}}\nelse {{\n    plugin::return_items(\\%itemcount);\n}}\n",
-      "params": [
-        {
-          "name": "recipe",
-          "label": "Recipe hash (Perl)",
-          "type": "str",
-          "default": "{ id => 'bones10p', req => { coin_scale => 10, no_items => 1 } }"
-        },
-        {
-          "name": "body_on_success",
-          "label": "Body to execute on success (can be multiline, use $sets)",
-          "type": "str",
-          "default": "    quest::say(\"Thanks for $sets x 10 platinum!\");\n    quest::exp(100 * $sets);"
-        },
-        {
-          "name": "rewards",
-          "label": "Reward lines (e.g. quest::summonitem(...); can be multiline)",
-          "type": "str",
-          "default": "    quest::summonitem(13073, 10 * $sets);"
-        }
-      ]
-    },
-    {
-      "plugin_id": "handin_exact_coin_item_combo",
-      "name": "Handin Exact \u2013 Coin Scale + Item",
-      "category": "Handin",
-      "perl_template": "my ($id, $sets) = plugin::handin_exact(\n    {recipe}\n);\n\nif ($id && $sets > 0) {{\n{body_on_success}\n{rewards}\n}}\nelse {{\n    plugin::return_items(\\%itemcount);\n}}\n",
-      "params": [
-        {
-          "name": "recipe",
-          "label": "Recipe hash (Perl)",
-          "type": "str",
-          "default": "{ id => 'item5p_combo', req => { coin_scale => 5, 1001 => 1 } }"
-        },
-        {
-          "name": "body_on_success",
-          "label": "Body to execute on success (can be multiline, use $sets)",
-          "type": "str",
-          "default": "    quest::say(\"You gave $sets x 5p and a token!\");\n    quest::exp(150 * $sets);"
-        },
-        {
-          "name": "rewards",
-          "label": "Reward lines (e.g. quest::summonitem(...); can be multiline)",
-          "type": "str",
-          "default": "    quest::summonitem(2001, $sets);"
-        }
-      ]
-    },
-    {
-      "plugin_id": "handin_exact_coin_tiered",
-      "name": "Handin Exact \u2013 Coin Scale (Tiered)",
-      "category": "Handin",
-      "perl_template": "my ($id, $sets) = plugin::handin_exact(\n    {recipe}\n);\n\nif ($id && $sets > 0) {{\n{body_on_success}\n{rewards}\n}}\nelse {{\n    plugin::return_items(\\%itemcount);\n}}\n",
-      "params": [
-        {
-          "name": "recipe",
-          "label": "Recipe hash (Perl)",
-          "type": "str",
-          "default": "{ id => 'tier25p', req => { coin_scale => 25, no_items => 1 } }"
-        },
-        {
-          "name": "body_on_success",
-          "label": "Body to execute on success (can be multiline, use $sets)",
-          "type": "str",
-          "default": "    if ($sets >= 4) {{\n        quest::say(\"Big spender! $sets x 25p!\");\n    }} else {{\n        quest::say(\"Thanks for $sets x 25p.\");\n    }}\n    quest::exp(200 * $sets);"
-        },
-        {
-          "name": "rewards",
-          "label": "Reward lines (e.g. quest::summonitem(...); can be multiline)",
-          "type": "str",
-          "default": "    if ($sets >= 4) {{\n        quest::summonitem(3003);\n    }} else {{\n        quest::summonitem(3002, $sets);\n    }}"
-        }
-      ]
-    },
-    {
-      "plugin_id": "handin_exact_items",
-      "name": "Handin Exact \u2013 Items Only",
-      "category": "Handin",
-      "perl_template": "my $id = plugin::handin_exact(\n    {recipe}\n);\n\nif ($id) {{\n{body_on_success}\n{rewards}\n}}\nelse {{\n    plugin::return_items(\\%itemcount);\n}}\n",
-      "params": [
-        {
-          "name": "recipe",
-          "label": "Recipe hash (Perl)",
-          "type": "str",
-          "default": "{ id => 'quest_scroll', req => { 1010 => 1, 1020 => 1 } }"
-        },
-        {
-          "name": "body_on_success",
-          "label": "Body to execute on success (can be multiline)",
-          "type": "str",
-          "default": "    quest::say(\"Excellent, both scrolls!\");\n    quest::exp(500);"
-        },
-        {
-          "name": "rewards",
-          "label": "Reward lines (e.g. quest::summonitem(...); can be multiline)",
-          "type": "str",
-          "default": "    quest::summonitem(2005);"
-        }
-      ]
-    },
-    {
-      "plugin_id": "handin_exact_mixed_coins",
-      "name": "Handin Exact \u2013 Mixed Coins",
-      "category": "Handin",
-      "perl_template": "my $id = plugin::handin_exact(\n    {recipe}\n);\n\nif ($id) {{\n{body_on_success}\n{rewards}\n}}\nelse {{\n    plugin::return_items(\\%itemcount);\n}}\n",
-      "params": [
-        {
-          "name": "recipe",
-          "label": "Recipe hash (Perl)",
-          "type": "str",
-          "default": "{ id => 'mixed_coins', req => { platinum => 5, gold => 2, silver => 3, copper => 7 } }"
-        },
-        {
-          "name": "body_on_success",
-          "label": "Body to execute on success (can be multiline)",
-          "type": "str",
-          "default": "    quest::say(\"Perfect \u2014 exactly 5p, 2g, 3s, 7c!\");\n    quest::exp(200);"
-        },
-        {
-          "name": "rewards",
-          "label": "Reward lines (e.g. quest::summonitem(...); can be multiline)",
-          "type": "str",
-          "default": "    quest::summonitem(13073, 5);"
-        }
-      ]
-    },
-    {
       "plugin_id": "return_items",
       "name": "Return Items",
       "category": "Inventory",
@@ -159,36 +29,10 @@
       ]
     },
     {
-      "plugin_id": "check_handin",
-      "name": "Check Handin (Items + Coins)",
-      "category": "Handin",
-      "perl_template": "if (plugin::check_handin(\\%itemcount, {reqs})) {{\n{body_on_success}\n{rewards}\n}}\nelse {{\n    plugin::return_items(\\%itemcount);\n}}\n",
-      "params": [
-        {
-          "name": "reqs",
-          "label": "Requirements (e.g. 1234 => 1, platinum => 10)",
-          "type": "str",
-          "default": "1234 => 1, platinum => 10"
-        },
-        {
-          "name": "body_on_success",
-          "label": "Body to execute on success (can be multiline)",
-          "type": "str",
-          "default": "    quest::say(\"Well done.\");"
-        },
-        {
-          "name": "rewards",
-          "label": "Reward lines (e.g. quest::summonitem(...); can be multiline)",
-          "type": "str",
-          "default": "    quest::summonitem(1001);"
-        }
-      ]
-    },
-    {
       "plugin_id": "check_hasitem",
       "name": "Check Has Item",
       "category": "Handin",
-      "perl_template": "if (plugin::check_hasitem($client, {item_id})) {{\n{body}\n}}\n",
+      "perl_template": "if (plugin::check_hasitem($client, {item_id})) {\n{body}\n}\n",
       "params": [
         {
           "name": "item_id",
@@ -322,7 +166,7 @@
       "plugin_id": "say_check",
       "name": "Check Say Text (Simple)",
       "category": "Chat",
-      "perl_template": "if (plugin::check_said($text, {match})) {{\n{body}\n}}\n",
+      "perl_template": "if (plugin::check_said($text, {match})) {\n{body}\n}\n",
       "params": [
         {
           "name": "match",
@@ -439,6 +283,294 @@
           "label": "Heading",
           "type": "int",
           "default": "0"
+        }
+      ]
+    },
+    {
+      "plugin_id": "hole_roamer_init",
+      "name": "Hole Roamer \u2013 Init",
+      "category": "Movement",
+      "perl_template": "plugin::hole_roamer_init(\n    min_x          => {min_x},\n    max_x          => {max_x},\n    min_y          => {min_y},\n    max_y          => {max_y},\n    hole_min_x     => {hole_min_x},\n    hole_max_x     => {hole_max_x},\n    hole_min_y     => {hole_min_y},\n    hole_max_y     => {hole_max_y},\n    min_allowed_z  => {min_allowed_z},\n    max_allowed_z  => {max_allowed_z},\n    hover          => {hover},\n    max_failures   => {max_failures},\n    max_air_height => {max_air_height},\n    roam_min_delay => {roam_min_delay},\n    roam_max_delay => {roam_max_delay}\n);",
+      "params": [
+        {
+          "name": "min_x",
+          "label": "Min X",
+          "type": "int",
+          "default": -3100
+        },
+        {
+          "name": "max_x",
+          "label": "Max X",
+          "type": "int",
+          "default": 2675
+        },
+        {
+          "name": "min_y",
+          "label": "Min Y",
+          "type": "int",
+          "default": -2900
+        },
+        {
+          "name": "max_y",
+          "label": "Max Y",
+          "type": "int",
+          "default": 3046
+        },
+        {
+          "name": "hole_min_x",
+          "label": "Hole Min X",
+          "type": "int",
+          "default": -1525
+        },
+        {
+          "name": "hole_max_x",
+          "label": "Hole Max X",
+          "type": "int",
+          "default": 1780
+        },
+        {
+          "name": "hole_min_y",
+          "label": "Hole Min Y",
+          "type": "int",
+          "default": -1527
+        },
+        {
+          "name": "hole_max_y",
+          "label": "Hole Max Y",
+          "type": "int",
+          "default": 2184
+        },
+        {
+          "name": "min_allowed_z",
+          "label": "Min Z",
+          "type": "int",
+          "default": 10
+        },
+        {
+          "name": "max_allowed_z",
+          "label": "Max Z",
+          "type": "int",
+          "default": 1500
+        },
+        {
+          "name": "hover",
+          "label": "Hover Offset",
+          "type": "int",
+          "default": 2
+        },
+        {
+          "name": "max_failures",
+          "label": "Max Failures",
+          "type": "int",
+          "default": 5
+        },
+        {
+          "name": "max_air_height",
+          "label": "Max Air Height",
+          "type": "int",
+          "default": 5
+        },
+        {
+          "name": "roam_min_delay",
+          "label": "Min roam delay",
+          "type": "int",
+          "default": 5
+        },
+        {
+          "name": "roam_max_delay",
+          "label": "Max roam delay",
+          "type": "int",
+          "default": 30
+        }
+      ]
+    },
+    {
+      "plugin_id": "hole_roamer_timer",
+      "name": "Hole Roamer \u2013 Timer",
+      "category": "Movement",
+      "perl_template": "plugin::hole_roamer_timer($timer);",
+      "params": []
+    },
+    {
+      "plugin_id": "hole_roamer_cleanup",
+      "name": "Hole Roamer \u2013 Cleanup",
+      "category": "Movement",
+      "perl_template": "plugin::hole_roamer_cleanup();",
+      "params": []
+    },
+    {
+      "plugin_id": "check_handin_normal",
+      "name": "Handin \u2013 Normal (Legacy)",
+      "category": "Handin",
+      "perl_template": "my ($ok, $sets) = plugin::check_handin(\\%itemcount,\n{recipe}\n{strict_trade_line}{debug_line});\n\nif ($ok) {\n{body_on_success}\n} else {\n    plugin::return_items(\\%itemcount);\n}\n",
+      "params": [
+        {
+          "name": "recipe",
+          "label": "Recipe (Perl hash lines) \u2013 items/coins allowed",
+          "type": "str",
+          "default": "    1353 => 1,\n    2001 => 1\n"
+        },
+        {
+          "name": "strict_trade_line",
+          "label": "Strict Trade? (reject extra items/coins) (Perl line or blank)",
+          "type": "str",
+          "default": "    strict_trade => 0,\n"
+        },
+        {
+          "name": "debug_line",
+          "label": "Debug? (Perl line or blank)",
+          "type": "str",
+          "default": "    debug => 0\n"
+        },
+        {
+          "name": "body_on_success",
+          "label": "Body on success",
+          "type": "str",
+          "default": "    quest::say(\"Thanks!\");\n    # rewards here"
+        }
+      ]
+    },
+    {
+      "plugin_id": "check_handin_exact_coin",
+      "name": "Handin \u2013 Exact Coins (+ optional items)",
+      "category": "Handin",
+      "perl_template": "my ($ok, $sets) = plugin::check_handin(\\%itemcount,\n{recipe}\n    platinum => {pp},\n    gold     => {gp},\n    silver   => {sp},\n    copper   => {cp},\n{strict_trade_line}{debug_line});\n\nif ($ok) {\n{body_on_success}\n} else {\n    plugin::return_items(\\%itemcount);\n}\n",
+      "params": [
+        {
+          "name": "recipe",
+          "label": "Optional item requirements (Perl hash lines) OR blank",
+          "type": "str",
+          "default": "    # 1353 => 1,\n"
+        },
+        {
+          "name": "pp",
+          "label": "Platinum (exact)",
+          "type": "int",
+          "default": "0"
+        },
+        {
+          "name": "gp",
+          "label": "Gold (exact)",
+          "type": "int",
+          "default": "0"
+        },
+        {
+          "name": "sp",
+          "label": "Silver (exact)",
+          "type": "int",
+          "default": "0"
+        },
+        {
+          "name": "cp",
+          "label": "Copper (exact)",
+          "type": "int",
+          "default": "0"
+        },
+        {
+          "name": "strict_trade_line",
+          "label": "Strict Trade? (reject extra items/coins) (Perl line or blank)",
+          "type": "str",
+          "default": "    strict_trade => 0,\n"
+        },
+        {
+          "name": "debug_line",
+          "label": "Debug? (Perl line or blank)",
+          "type": "str",
+          "default": "    debug => 0\n"
+        },
+        {
+          "name": "body_on_success",
+          "label": "Body on success",
+          "type": "str",
+          "default": "    quest::say(\"Exact payment received.\");\n    # rewards here"
+        }
+      ]
+    },
+    {
+      "plugin_id": "check_handin_coin_scale",
+      "name": "Handin \u2013 Coin Scale (Sets by PP)",
+      "category": "Handin",
+      "perl_template": "my ($ok, $sets) = plugin::check_handin(\\%itemcount,\n    coin_scale => {pp_per_set},\n    no_items   => {no_items},\n    min_sets   => {min_sets},\n    max_sets   => {max_sets},\n{strict_trade_line}{debug_line});\n\nif ($ok) {\n{body_on_success}\n} else {\n    plugin::return_items(\\%itemcount);\n}\n",
+      "params": [
+        {
+          "name": "pp_per_set",
+          "label": "Platinum per set",
+          "type": "int",
+          "default": 50
+        },
+        {
+          "name": "no_items",
+          "label": "No Items? (1 = coins-only, default behavior)",
+          "type": "int",
+          "default": 1
+        },
+        {
+          "name": "min_sets",
+          "label": "Min sets",
+          "type": "int",
+          "default": 1
+        },
+        {
+          "name": "max_sets",
+          "label": "Max sets (safety cap)",
+          "type": "int",
+          "default": 10
+        },
+        {
+          "name": "strict_trade_line",
+          "label": "Strict Trade? (reject extra items/coins) (Perl line or blank)",
+          "type": "str",
+          "default": "    strict_trade => 0,\n"
+        },
+        {
+          "name": "debug_line",
+          "label": "Debug? (Perl line or blank)",
+          "type": "str",
+          "default": "    debug => 0\n"
+        },
+        {
+          "name": "body_on_success",
+          "label": "Body on success (use $sets)",
+          "type": "str",
+          "default": "    quest::say(\"OK, I counted $sets set(s).\");\n    # reward scale using $sets"
+        }
+      ]
+    },
+    {
+      "plugin_id": "check_handin_item_scale_single",
+      "name": "Handin \u2013 Item Scale (Single Item, req=1)",
+      "category": "Handin",
+      "perl_template": "my ($ok, $sets) = plugin::check_handin(\\%itemcount,\n    item_scale => 1,\n    {item_id} => 1,\n    max_sets  => {max_sets},\n{strict_trade_line}{debug_line});\n\nif ($ok) {\n{body_on_success}\n} else {\n    plugin::return_items(\\%itemcount);\n}\n",
+      "params": [
+        {
+          "name": "item_id",
+          "label": "Item ID (the only allowed item requirement)",
+          "type": "int",
+          "default": 1353
+        },
+        {
+          "name": "max_sets",
+          "label": "Max sets (safety cap)",
+          "type": "int",
+          "default": 10
+        },
+        {
+          "name": "strict_trade_line",
+          "label": "Strict Trade? (reject extra items/coins) (Perl line or blank)",
+          "type": "str",
+          "default": "    strict_trade => 1,\n"
+        },
+        {
+          "name": "debug_line",
+          "label": "Debug? (Perl line or blank)",
+          "type": "str",
+          "default": "    debug => 0\n"
+        },
+        {
+          "name": "body_on_success",
+          "label": "Body on success (use $sets)",
+          "type": "str",
+          "default": "    quest::say(\"You turned in $sets item(s).\");\n    # reward scale using $sets"
         }
       ]
     }
