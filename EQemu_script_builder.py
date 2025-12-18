@@ -8,22 +8,24 @@ from typing import List, Dict, Any, Optional
 from PyQt6 import QtWidgets, QtGui, QtCore
 from functools import partial
 
-def render_plugin_template(template: str, params: dict) -> str:
-    """
-    Very simple template renderer:
-      - Replaces {name} where 'name' is a key in params
-      - Leaves all other { ... } sequences alone (for Perl hashes etc)
-    """
-    def repl(match: re.Match) -> str:
-        name = match.group(1)
-        if name in params:
-            return str(params[name])
-        # leave unknown {something} intact
-        return match.group(0)
+# Matches {param_name} where param_name is a valid identifier
+_PLACEHOLDER_RE = re.compile(r"\{([A-Za-z_]\w*)\}")
 
-    # Only match {word_characters_or_underscores}
-    pattern = re.compile(r"\{([A-Za-z_][A-Za-z0-9_]*)\}")
-    return pattern.sub(repl, template)
+def render_plugin_template(template: str, params: Dict[str, Any]) -> str:
+    """
+    Replace {param} placeholders only.
+    Leaves all other braces untouched (Perl blocks, JSON, etc. are safe).
+    Raises a clear error if a placeholder exists but no param was provided.
+    """
+
+    def repl(m: re.Match) -> str:
+        key = m.group(1)
+        if key not in params:
+            raise ValueError(f"Missing template param: {key}")
+        val = params[key]
+        return "" if val is None else str(val)
+
+    return _PLACEHOLDER_RE.sub(repl, template)
     
 def apply_dark_theme(app: QtWidgets.QApplication):
     # Use Fusion as a base
@@ -669,13 +671,19 @@ class PluginManagerDialog(QtWidgets.QDialog):
         self.refresh_list()
 
     # --- Params helpers ---
-    def _preview_default(self, text: str, max_len: int = 40) -> str:
+    def _preview_default(self, value: Any, max_len: int = 40) -> str:
         """
         Show a short, single-line preview of the default value.
         Newlines become '⏎', and long text is truncated.
+        Works for str, int, etc. by stringifying first.
         """
+        if value is None:
+            return ""
+
+        text = str(value)
         if not text:
             return ""
+
         one_line = text.replace("\n", "⏎")
         if len(one_line) > max_len:
             one_line = one_line[: max_len - 3] + "..."
