@@ -35,9 +35,11 @@ This project uses a rolling release model (no version numbers).
   - Multiline default editor via double-click
   - Safe default value storage
 - Theme system refined with persistent dark/light modes
+- Flow window is now alphabetized
 
 ### Fixed
 - Plugin templates breaking due to brace misuse
 - Silent failures when plugin parameters were missing
 - Timers being set without warnings
 - Loss of multiline defaults in plugin parameters
+
