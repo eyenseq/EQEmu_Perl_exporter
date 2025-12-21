@@ -3,6 +3,73 @@ A visual drag-and-drop quest-scripting IDE for EverQuest Emulator (EQEmu), featu
 
 ---
 
+## 🚀 What’s New (Recent Updates)
+
+This section highlights **recently added features**, what changed, and **how to use them**.
+
+### 🔍 Diagnostics Panel (New)
+
+A new right-side **Diagnostics Panel** provides live feedback while you build scripts. F8 to minimize or bring back.
+
+**What it does**
+- Live structural validation (missing EVENTs, bad timers, empty conditions)
+- Live-generated Perl preview
+- On-demand `perl -c` syntax checking
+
+**How to use**
+- Open automatically when editing a script
+- Tabs:
+  - **Validation** – errors, warnings, info
+  - **Live Perl** – real-time generated output
+  - **Perl -c** – click **Run perl -c** to validate syntax
+
+---
+
+### 🧠 Safer Plugin Template Rendering (Changed)
+
+Plugin templates now use **strict placeholder substitution**.
+
+**What changed**
+- Only `{param}` placeholders are replaced
+- All other braces `{}` are preserved
+- Missing parameters raise clear validation errors
+- No more escaping braces
+
+---
+
+### 🧪 Built-in Linting & Heuristics (New)
+
+Beyond Perl syntax checking, the builder now performs **lightweight static analysis**.
+
+**Detects**
+- Unbalanced quotes, parentheses, and braces
+- Empty IF / WHILE conditions
+- Timers without `EVENT_TIMER`
+- Suspicious tokens (`;;`, malformed `$timer eq "name"`)
+
+---
+
+### ⏱️ Smarter Timer Handling (Changed)
+
+Timers are now context-aware.
+
+**What changed**
+- Warns if timers exist without an `EVENT_TIMER`
+- Validates timer name and duration
+- Auto-creates `EVENT_TIMER` handlers when possible
+
+---
+
+### 📦 Block Templates (New)
+
+Save and reuse entire block trees.
+
+**What it does**
+- Store reusable logic patterns (hand-ins, greetings, timers)
+- Templates saved to `block_templates.json`
+
+---
+
 ## 📌 Overview
 
 **EQEmu Script Builder** is a Python + PyQt6 application that allows EQEmu server developers to build NPC quest scripts using a **visual block-based editor** instead of manually writing Perl.
