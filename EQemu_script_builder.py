@@ -3,8 +3,7 @@ import os
 import re
 import collections
 from dataclasses import dataclass, field
-from typing import List, Dict, Any, Optional
-
+from typing import List, Dict, Any, Optional, Tuple
 from PyQt6 import QtWidgets, QtGui, QtCore
 from functools import partial
 
@@ -26,7 +25,241 @@ def render_plugin_template(template: str, params: Dict[str, Any]) -> str:
         return "" if val is None else str(val)
 
     return _PLACEHOLDER_RE.sub(repl, template)
-    
+
+@dataclass
+class ValidationIssue:
+    level: str   # "error" | "warn" | "info"
+    message: str
+    where: str = ""  # optional label/path
+
+
+def _walk_blocks(blocks):
+    for b in blocks:
+        yield b
+        for c in getattr(b, "children", []) or []:
+            yield from _walk_blocks([c])
+
+
+def validate_blocks(blocks, plugin_registry) -> list[ValidationIssue]:
+    issues: list[ValidationIssue] = []
+
+    # -------------------------
+    # Helpers (heuristics)
+    # -------------------------
+    def _count_unescaped(s: str, ch: str) -> int:
+        if not s:
+            return 0
+        n = 0
+        esc = False
+        for c in s:
+            if esc:
+                esc = False
+                continue
+            if c == "\\":
+                esc = True
+                continue
+            if c == ch:
+                n += 1
+        return n
+
+    def _unbalanced_quotes(s: str) -> bool:
+        # naive but very effective for "missing quote" mistakes
+        dq = _count_unescaped(s, '"')
+        sq = _count_unescaped(s, "'")
+        return (dq % 2) == 1 or (sq % 2) == 1
+
+    def _balanced_pairs(s: str, open_ch: str, close_ch: str) -> tuple[bool, int]:
+        """
+        Returns (ok, delta) where delta>0 means more open than close,
+        delta<0 means more close than open at some point.
+        Ignores brackets inside quotes (roughly).
+        """
+        if not s:
+            return True, 0
+        stack = 0
+        in_sq = False
+        in_dq = False
+        esc = False
+        for c in s:
+            if esc:
+                esc = False
+                continue
+            if c == "\\":
+                esc = True
+                continue
+            if c == "'" and not in_dq:
+                in_sq = not in_sq
+                continue
+            if c == '"' and not in_sq:
+                in_dq = not in_dq
+                continue
+            if in_sq or in_dq:
+                continue
+
+            if c == open_ch:
+                stack += 1
+            elif c == close_ch:
+                stack -= 1
+                if stack < 0:
+                    return False, stack
+        return (stack == 0), stack
+
+    def _has_suspicious_tokens(s: str) -> list[str]:
+        """
+        Extra sanity checks: returns list of warnings strings.
+        """
+        out = []
+        if not s:
+            return out
+
+        # Common "oops" in Perl
+        if "$timer eq" in s and '"' in s and "$timer eq \"" in s and '"' not in s.split("$timer eq", 1)[1]:
+            out.append("Possible malformed $timer eq \"name\" comparison.")
+
+        # double semicolons aren't fatal but often a typo
+        if ";;" in s:
+            out.append("Contains ';;' (double semicolon).")
+
+        # a dangling backslash at end of line
+        for line in s.splitlines():
+            if line.rstrip().endswith("\\"):
+                out.append("Line ends with '\\' (possible accidental escape).")
+                break
+
+        return out
+
+    def _walk_blocks(bs):
+        for b in bs:
+            yield b
+            for c in getattr(b, "children", []) or []:
+                yield from _walk_blocks([c])
+
+    # -------------------------
+    # 1) Basic structure checks
+    # -------------------------
+    event_blocks = [b for b in blocks if b.type == BLOCK_EVENT]
+    if not event_blocks:
+        issues.append(ValidationIssue("warn", "No EVENT block found (script will do nothing).", "root"))
+
+    # -------------------------
+    # 2) Duplicate top-level EVENT_* blocks
+    # -------------------------
+    counts = {}
+    for b in blocks:
+        if b.type == BLOCK_EVENT:
+            ev = (b.params.get("event_name") or "").strip()
+            if ev:
+                counts[ev] = counts.get(ev, 0) + 1
+    for ev, n in counts.items():
+        if n > 1:
+            issues.append(ValidationIssue(
+                "warn",
+                f"Duplicate top-level handler: {ev} appears {n} times (often accidental).",
+                ev
+            ))
+
+    # -------------------------
+    # 3) Plugin template checks
+    # -------------------------
+    for b in _walk_blocks(blocks):
+        if b.type != BLOCK_PLUGIN:
+            continue
+
+        pid = b.params.get("plugin_id")
+        if not pid:
+            issues.append(ValidationIssue("error", "Plugin block has no plugin selected.", b.label))
+            continue
+
+        pdef = plugin_registry.get(pid)
+        if not pdef:
+            issues.append(ValidationIssue("error", f"Unknown plugin_id '{pid}' (not found in plugins.json).", b.label))
+            continue
+
+        plugin_params = b.params.get("plugin_params", {}) or {}
+        try:
+            _ = render_plugin_template(pdef.perl_template, plugin_params)
+        except Exception as e:
+            issues.append(ValidationIssue("error", f"Plugin template render failed: {e}", b.label))
+
+    # -------------------------
+    # 4) Timer checks
+    # -------------------------
+    timer_sets = set()
+    for b in _walk_blocks(blocks):
+        if b.type == BLOCK_TIMER:
+            name = (b.params.get("name") or "").strip()
+            secs = b.params.get("seconds", None)
+            if not name:
+                issues.append(ValidationIssue("error", "Timer block missing timer name.", b.label))
+            else:
+                timer_sets.add(name)
+            try:
+                if secs is None or int(secs) < 0:
+                    issues.append(ValidationIssue("error", "Timer seconds must be >= 0.", b.label))
+            except Exception:
+                issues.append(ValidationIssue("error", "Timer seconds is not an integer.", b.label))
+
+    has_event_timer = any(b.type == BLOCK_EVENT and b.params.get("event_name") == "EVENT_TIMER" for b in blocks)
+    if timer_sets and not has_event_timer:
+        issues.append(ValidationIssue("warn", "You set timers but have no EVENT_TIMER handler.", "root"))
+
+    # -------------------------
+    # 5) Syntax-ish lint: (), {}, quotes, etc.
+    #     Applies to:
+    #       - RAW PERL blocks (code)
+    #       - IF/WHILE expressions (expr)
+    #       - quest call args (args)
+    # -------------------------
+    def lint_text(text: str, where_label: str, severity="warn"):
+        if not text:
+            return
+
+        # Quotes
+        if _unbalanced_quotes(text):
+            issues.append(ValidationIssue(severity, "Unbalanced quotes (missing \" or ').", where_label))
+
+        # Parentheses
+        ok, delta = _balanced_pairs(text, "(", ")")
+        if not ok:
+            msg = "Too many ')' (parentheses close before open)." if delta < 0 else "Unbalanced parentheses (missing ')')."
+            issues.append(ValidationIssue(severity, msg, where_label))
+        elif delta != 0:
+            issues.append(ValidationIssue(severity, "Unbalanced parentheses (missing ')').", where_label))
+
+        # Braces
+        ok, delta = _balanced_pairs(text, "{", "}")
+        if not ok:
+            msg = "Too many '}' (brace close before open)." if delta < 0 else "Unbalanced braces (missing '}')."
+            issues.append(ValidationIssue(severity, msg, where_label))
+        elif delta != 0:
+            issues.append(ValidationIssue(severity, "Unbalanced braces (missing '}').", where_label))
+
+        # Extra cheap heuristics
+        for w in _has_suspicious_tokens(text):
+            issues.append(ValidationIssue("info", w, where_label))
+
+    for b in _walk_blocks(blocks):
+        # RAW PERL blocks
+        if b.type == BLOCK_RAW_PERL:
+            code = (b.params.get("code") or "")
+            lint_text(code, b.label, severity="warn")
+
+        # IF / WHILE expressions
+        if b.type in (BLOCK_IF, BLOCK_WHILE):
+            expr = (b.params.get("expr") or "").strip()
+            if not expr:
+                issues.append(ValidationIssue("error", "Empty condition expression.", b.label))
+            else:
+                lint_text(expr, b.label, severity="warn")
+
+        # Quest call blocks (if you have them)
+        if "call" in (b.params or {}) and "args" in (b.params or {}):
+            args = (b.params.get("args") or "")
+            lint_text(args, b.label, severity="warn")
+
+    return issues
+
+   
 def apply_dark_theme(app: QtWidgets.QApplication):
     # Use Fusion as a base
     app.setStyle("Fusion")
@@ -530,6 +763,49 @@ def load_api_methods() -> Dict[str, List[MethodDef]]:
 
     return methods_by_cat
 
+@dataclass
+class BlockTemplateDef:
+    template_id: str
+    name: str
+    root_block: Dict[str, Any]  # Block.to_dict()
+
+class BlockTemplateRegistry:
+    def __init__(self, path: str = "block_templates.json"):
+        self.path = path
+        self.templates: Dict[str, BlockTemplateDef] = {}
+        self.load()
+
+    def load(self):
+        if not os.path.exists(self.path):
+            self.templates = {}
+            return
+        with open(self.path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        self.templates = {}
+        for t in data.get("templates", []):
+            self.templates[t["template_id"]] = BlockTemplateDef(
+                template_id=t["template_id"],
+                name=t.get("name", t["template_id"]),
+                root_block=t["root_block"],
+            )
+
+    def delete(self, template_id: str) -> bool:
+        if template_id in self.templates:
+            del self.templates[template_id]
+            self.save()
+            return True
+        return False
+
+    def save(self):
+        data = {"templates": [
+            {"template_id": t.template_id, "name": t.name, "root_block": t.root_block}
+            for t in self.templates.values()
+        ]}
+        with open(self.path, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+
+    def list_templates(self) -> List[BlockTemplateDef]:
+        return sorted(self.templates.values(), key=lambda t: t.name.lower())
 
 # -------------------------
 # Plugin Manager (JSON-backed)
@@ -926,14 +1202,107 @@ class BlockPalette(QtWidgets.QListWidget):
             ("QUEST:: CALL", BLOCK_QUEST_CALL),
             ("RAW PERL", BLOCK_RAW_PERL),
         ]
+
+        # Alphabetize by display name
+        items.sort(key=lambda x: x[0].lower())
+
         for text, block_type in items:
             item = QtWidgets.QListWidgetItem(text)
             item.setData(QtCore.Qt.ItemDataRole.UserRole, block_type)
             self.addItem(item)
 
+
     def on_double_click(self, item):
         block_type = item.data(QtCore.Qt.ItemDataRole.UserRole)
         self.block_selected.emit(block_type)
+
+class DiagnosticsPanel(QtWidgets.QTabWidget):
+    """
+    Tabs:
+      - Validation: list of issues
+      - Live Perl: live generated Perl preview
+      - Perl -c: on-demand perl syntax check output
+    """
+    run_perl_c_requested = QtCore.pyqtSignal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+
+        # Validation tab
+        self.validation_list = QtWidgets.QListWidget()
+        self.validation_list.setWordWrap(True)
+        self.addTab(self.validation_list, "Validation")
+
+        # Live Perl tab
+        self.perl_preview = QtWidgets.QPlainTextEdit()
+        self.perl_preview.setReadOnly(True)
+        self.perl_preview.setLineWrapMode(QtWidgets.QPlainTextEdit.LineWrapMode.NoWrap)
+        self.perl_preview.setFont(QtGui.QFont("Consolas", 9))
+        self.addTab(self.perl_preview, "Live Perl")
+
+        # Perl -c tab (on demand)
+        perl_c_tab = QtWidgets.QWidget()
+        v = QtWidgets.QVBoxLayout(perl_c_tab)
+        v.setContentsMargins(6, 6, 6, 6)
+        v.setSpacing(6)
+
+        top = QtWidgets.QHBoxLayout()
+        self.perl_c_btn = QtWidgets.QPushButton("Run perl -c")
+        self.perl_c_btn.setToolTip("Runs `perl -c` against the currently generated script.")
+        self.perl_c_btn.clicked.connect(self.run_perl_c_requested.emit)
+        top.addWidget(self.perl_c_btn)
+
+        top.addStretch(1)
+
+        self.perl_c_status = QtWidgets.QLabel("Not run yet.")
+        self.perl_c_status.setTextFormat(QtCore.Qt.TextFormat.RichText)
+        top.addWidget(self.perl_c_status)
+
+        v.addLayout(top)
+
+        self.perl_c_output = QtWidgets.QPlainTextEdit()
+        self.perl_c_output.setReadOnly(True)
+        self.perl_c_output.setLineWrapMode(QtWidgets.QPlainTextEdit.LineWrapMode.NoWrap)
+        self.perl_c_output.setFont(QtGui.QFont("Consolas", 9))
+        v.addWidget(self.perl_c_output)
+
+        self.addTab(perl_c_tab, "Perl -c")
+    
+    def set_perl_c_output_text(self, text: str):
+        self.perl_c_output.setPlainText(text or "")
+
+    def set_perl_c_status(self, ok: bool | None):
+        # ok: True = green OK, False = red error, None = neutral
+        if ok is True:
+            self.perl_c_status.setText("<b style='color:#0f9d58;'>syntax OK</b>")
+        elif ok is False:
+            self.perl_c_status.setText("<b style='color:#ea4335;'>syntax errors</b>")
+        else:
+            self.perl_c_status.setText("Not run yet.")
+
+    def set_validation(self, issues: list[ValidationIssue]):
+        self.validation_list.clear()
+        if not issues:
+            self.validation_list.addItem("✅ No issues found.")
+            return
+
+        for it in issues:
+            prefix = {"error": "❌", "warn": "⚠️", "info": "ℹ️"}.get(it.level, "•")
+            where = f" [{it.where}]" if it.where else ""
+            self.validation_list.addItem(f"{prefix} {it.message}{where}")
+
+    def set_perl(self, perl_text: str):
+        self.perl_preview.setPlainText(perl_text or "")
+
+    def set_perl_check(self, output: str, ok: bool | None):
+        self.perl_c_output.setPlainText(output or "")
+        if ok is None:
+            self.perl_c_status.setText("<i>Not run yet.</i>")
+        elif ok:
+            self.perl_c_status.setText("<b style='color:#0f9d58;'>syntax OK</b>")
+        else:
+            self.perl_c_status.setText("<b style='color:#ea4335;'>syntax errors</b>")
+
 
 class ScriptTree(QtWidgets.QTreeWidget):
     """
@@ -942,6 +1311,27 @@ class ScriptTree(QtWidgets.QTreeWidget):
     """
     selection_changed = QtCore.pyqtSignal(object)  # Block or None
     structure_changed = QtCore.pyqtSignal()
+
+    def insert_block_object(self, block: Block, parent_item=None):
+        item = QtWidgets.QTreeWidgetItem([block.label])
+        item.setFlags(
+            item.flags()
+            | QtCore.Qt.ItemFlag.ItemIsDragEnabled
+            | QtCore.Qt.ItemFlag.ItemIsDropEnabled
+        )
+        item.setData(0, QtCore.Qt.ItemDataRole.UserRole, block)
+
+        if parent_item is None:
+            self.addTopLevelItem(item)
+        else:
+            parent_item.addChild(item)
+            parent_item.setExpanded(True)
+
+        for child in block.children:
+            self.insert_block_object(child, item)
+
+        self.setCurrentItem(item)
+        return item
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -1202,7 +1592,8 @@ class BlockPropertyEditor(QtWidgets.QWidget):
     and a help footer per block.
     """
     block_changed = QtCore.pyqtSignal(object)  # Block
-
+    timer_defined = QtCore.pyqtSignal(str)
+    
     def __init__(self, plugin_registry: PluginRegistry, parent=None):
         super().__init__(parent)
         self.registry = plugin_registry
@@ -1559,14 +1950,60 @@ class BlockPropertyEditor(QtWidgets.QWidget):
         self.add_labeled_widget("Timer name", name_edit)
         self.add_labeled_widget("Seconds", sec_edit)
 
+        # Track last meaningful timer name on the block itself (for rename-in-place)
+        block.params.setdefault("_last_timer_name", (block.params.get("name") or "").strip())
+
         def update():
-            block.params["name"] = name_edit.text()
+            old_name = (block.params.get("name") or "").strip()
+            new_name = name_edit.text().strip()
+
+            block.params["name"] = new_name
             block.params["seconds"] = sec_edit.value()
-            block.label = f'Set timer "{name_edit.text()}" to {sec_edit.value()}s'
+            block.label = f'Set timer "{new_name}" to {sec_edit.value()}s'
             self.block_changed.emit(block)
 
-        name_edit.textChanged.connect(lambda _: update())
-        sec_edit.valueChanged.connect(lambda _: update())
+            # Determine which EVENT_* we are inside so EVENT_TIMER is created after it
+            prefer_after_event = ""
+            w = self.window()
+            if w and hasattr(w, "script_tree"):
+                item = w.script_tree.currentItem()
+                p = item
+                while p is not None:
+                    bb = p.data(0, QtCore.Qt.ItemDataRole.UserRole)
+                    if bb and getattr(bb, "type", None) == BLOCK_EVENT:
+                        prefer_after_event = (bb.params.get("event_name") or "").strip()
+                        break
+                    p = p.parent()
+
+            # Only attempt helper if we have a window with the helper
+            if w and hasattr(w, "ensure_event_timer_handler"):
+                old_for_helper = None
+
+                # If user is renaming directly, old_name captures the previous value
+                if old_name and new_name and old_name != new_name:
+                    old_for_helper = old_name
+
+                # If they blank it out then type again, use the last known non-empty name
+                elif (not old_name) and new_name:
+                    last = (block.params.get("_last_timer_name") or "").strip()
+                    if last and last != new_name:
+                        old_for_helper = last
+
+                w.ensure_event_timer_handler(
+                    new_name,
+                    old_name=old_for_helper,
+                    prefer_after_event=prefer_after_event
+                )
+
+            # Update last non-empty timer name *correctly*
+            if new_name:
+                block.params["_last_timer_name"] = new_name
+
+        name_edit.textChanged.connect(lambda _=None: update())
+        sec_edit.valueChanged.connect(lambda _=None: update())
+
+        # Run once so helper creates EVENT_TIMER + IF branch immediately for the default name
+        update()
 
     def _build_for_form(self, block: Block):
         var_edit = QtWidgets.QLineEdit(block.params.get("var_name", "$i"))
@@ -1594,25 +2031,22 @@ class BlockPropertyEditor(QtWidgets.QWidget):
         self.add_labeled_widget("Increment expression (e.g. ++, += 2)", inc_edit)
 
         def update():
-            block.params["var_name"] = var_edit.text()
-            block.params["start"] = start_edit.text().strip()
-            block.params["end"] = end_edit.text().strip()
-            block.params["cmp_op"] = cmp_combo.currentText().strip()
-            block.params["inc_expr"] = inc_edit.text().strip() or "++"
+            old_name = (block.params.get("name") or "").strip()
+            new_name = name_edit.text().strip()
 
-            start_s = block.params["start"]
-            end_s = block.params["end"]
-            cmp_op = block.params["cmp_op"]
-            inc_expr = block.params["inc_expr"]
-
-            block.label = f'for ({var_edit.text()} = {start_s}; {var_edit.text()} {cmp_op} {end_s}; {var_edit.text()}{inc_expr})'
+            block.params["name"] = new_name
+            block.params["seconds"] = sec_edit.value()
+            block.label = f'Set timer "{new_name}" to {sec_edit.value()}s'
             self.block_changed.emit(block)
 
-        var_edit.textChanged.connect(lambda _: update())
-        start_edit.textChanged.connect(lambda _: update())
-        end_edit.textChanged.connect(lambda _: update())
-        cmp_combo.currentTextChanged.connect(lambda _: update())
-        inc_edit.textChanged.connect(lambda _: update())
+            # keep track of last known name so rename works without creating extra IF branches
+            last_name = (block.params.get("name") or "").strip()
+
+            # Timer auto-helper: rename in place + update stoptimer()
+            w = self.window()
+            if w and hasattr(w, "ensure_event_timer_handler"):
+                w.ensure_event_timer_handler(old_for_helper, new_name)
+
 
     def _build_foreach_form(self, block: Block):
         var_edit = QtWidgets.QLineEdit(block.params.get("var_name", "$x"))
@@ -1623,6 +2057,7 @@ class BlockPropertyEditor(QtWidgets.QWidget):
 
         self.add_labeled_widget("Loop variable (e.g. $item)", var_edit)
         self.add_labeled_widget("List expression (e.g. @items or keys %hash)", list_edit)
+        last_name = (block.params.get("name") or "").strip()
 
         def update():
             block.params["var_name"] = var_edit.text()
@@ -1632,6 +2067,7 @@ class BlockPropertyEditor(QtWidgets.QWidget):
 
         var_edit.textChanged.connect(lambda _: update())
         list_edit.textChanged.connect(update)
+
 
     def _build_return_form(self, block: Block):
         value_edit = self._make_code_editor(block.params.get("value", ""), min_height=60)
@@ -2657,7 +3093,9 @@ class MainWindow(QtWidgets.QMainWindow):
         super().__init__()
         self.setWindowTitle("EQEmu Script Builder")
         self.resize(1400, 750)
-        
+
+        self.templates = BlockTemplateRegistry()
+
         # Track theme for persistence
         self.current_theme = "dark"
 
@@ -2672,20 +3110,19 @@ class MainWindow(QtWidgets.QMainWindow):
         # Undo / Redo stacks (structural changes only)
         self.undo_stack: List[str] = []
         self.redo_stack: List[str] = []
-      
-        # Central layout: palettes (tabs) | script | props
+
+        # Central layout: palettes (tabs) | script+props+diagnostics
         central = QtWidgets.QWidget()
         layout = QtWidgets.QHBoxLayout(central)
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(10)
 
+        # ------------------------------
         # Left: tabbed palette
+        # ------------------------------
         self.palette_tabs = QtWidgets.QTabWidget()
-
-        # Use normal horizontal tabs at the top of the left pane
         self.palette_tabs.setTabPosition(QtWidgets.QTabWidget.TabPosition.North)
         self.palette_tabs.setTabShape(QtWidgets.QTabWidget.TabShape.Rounded)
-
         self.palette_tabs.tabBar().setStyleSheet(
             "QTabBar::tab { padding: 6px 12px; }"
             "QTabBar::tab:selected { font-weight: bold; }"
@@ -2699,13 +3136,13 @@ class MainWindow(QtWidgets.QMainWindow):
         self.method_lists: Dict[str, QtWidgets.QListWidget] = {}
         self.method_search_boxes: Dict[str, QtWidgets.QLineEdit] = {}
 
-        # Add method tabs for categories of interest
         desired_cats = [
             "BOT", "BUFF", "CLIENT", "CORPSE", "DOORS",
             "ENTITYLIST", "EXPEDITION", "GROUP", "HATEENTRY",
             "INVENTORY", "MERC", "MOB", "NPC", "OBJECT",
             "RAID", "SPELL", "ZONE"
         ]
+
         for cat in desired_cats:
             methods = self.methods_by_cat.get(cat, [])
             if not methods:
@@ -2730,10 +3167,10 @@ class MainWindow(QtWidgets.QMainWindow):
                 item = QtWidgets.QListWidgetItem(text)
                 item.setData(QtCore.Qt.ItemDataRole.UserRole, (m.var, m.name, m.args))
                 lw.addItem(item)
+
             lw.itemDoubleClicked.connect(self.on_method_double_clicked)
             vbox.addWidget(lw)
 
-            # Filter for this tab
             def make_filter(list_widget=lw):
                 def _filter(text: str):
                     t = text.lower()
@@ -2746,15 +3183,20 @@ class MainWindow(QtWidgets.QMainWindow):
 
             self.method_lists[cat] = lw
             self.method_search_boxes[cat] = search
-
             self.palette_tabs.addTab(container, cat.title())
 
-
-        # Center/right
+        # ------------------------------
+        # Center/right: script tree + props + diagnostics
+        # ------------------------------
         self.script_tree = ScriptTree()
         self.props = BlockPropertyEditor(self.registry)
-        
-        self.script_tree.structure_changed.connect(self._snapshot_state)
+
+        # Diagnostics (Validation + Live Perl)
+        self.diagnostics = DiagnosticsPanel()
+        self.diagnostics.run_perl_c_requested.connect(self.on_run_perl_c_panel)
+
+        # Templates registry
+        self.templates = BlockTemplateRegistry()
 
         # --- Script search UI (center pane) ---
         self.script_search_box = QtWidgets.QLineEdit()
@@ -2772,40 +3214,318 @@ class MainWindow(QtWidgets.QMainWindow):
         sp_layout.addLayout(search_bar)
         sp_layout.addWidget(self.script_tree)
 
-        # Splitter so user can resize work area vs properties
+        # Splitter so user can resize script vs properties
         self.right_splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal)
         self.right_splitter.addWidget(script_panel)
         self.right_splitter.addWidget(self.props)
+        self.right_splitter.setStretchFactor(0, 4)
+        self.right_splitter.setStretchFactor(1, 1)
+        self.right_splitter.setSizes([900, 300])
 
-        # Make script area dominate
-        self.right_splitter.setStretchFactor(0, 4)  # script tree
-        self.right_splitter.setStretchFactor(1, 1)  # properties
+        # OUTER splitter: palette (left) | work area (center) | diagnostics (right)
+        outer = QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal)
+        outer.addWidget(self.palette_tabs)        # left
+        outer.addWidget(self.right_splitter)      # center (tree + props)
+        outer.addWidget(self.diagnostics)         # right (validation + live perl)
 
-        # Optional: set initial sizes (pixels)
-        self.right_splitter.setSizes([900, 300])  # adjust to taste
+        # --- allow "minimize" of diagnostics via splitter collapse ---
+        self.outer_splitter = outer
+        self._diag_restore_sizes = None
+        self._diag_min_width = 24  # visible "tab" width when minimized (adjust if you want)
 
-        # Left: palette, Right: splitter (script + props)
-        layout.addWidget(self.palette_tabs, 1)
-        layout.addWidget(self.right_splitter, 4)
+        # Let the user fully collapse the diagnostics pane
+        outer.setCollapsible(0, False)  # palette_tabs
+        outer.setCollapsible(1, False)  # center+props splitter
+        outer.setCollapsible(2, True)   # diagnostics
 
-        self.setCentralWidget(central)
+        outer.setStretchFactor(0, 1)
+        outer.setStretchFactor(1, 4)
+        outer.setStretchFactor(2, 2)
+        outer.setSizes([260, 950, 520])
 
-        # Wire up
+        self.setCentralWidget(outer)
+
+        # ------------------------------
+        # Wire up signals
+        # ------------------------------
+        self.script_tree.structure_changed.connect(self.refresh_diagnostics)
+        self.props.block_changed.connect(lambda _b: self.refresh_diagnostics())
+
         self.flow_palette.block_selected.connect(self.on_palette_add_block)
         self.script_tree.selection_changed.connect(self.props.set_block)
         self.props.block_changed.connect(self.on_block_changed)
-        
+
         # Search state for script tree
         self.script_search_matches: List[QtWidgets.QTreeWidgetItem] = []
         self.script_search_index: int = -1
-
         self.script_search_box.textChanged.connect(self.on_script_search_changed)
         self.script_search_next.clicked.connect(self.on_script_find_next)
 
+        # Menus
         self._create_menu()
 
         # initial state: either restore last session or start empty
         self._load_script_state()
+
+        # initial diagnostics refresh (after everything is loaded)
+        self.refresh_diagnostics()
+
+    def toggle_diagnostics(self):
+        """
+        Collapse / restore diagnostics pane reliably.
+        """
+        if not hasattr(self, "outer_splitter"):
+            return
+
+        splitter = self.outer_splitter
+        sizes = splitter.sizes()
+
+        # Expecting: [palette, center+props, diagnostics]
+        if len(sizes) != 3:
+            return
+
+        diag_size = sizes[2]
+
+        # ---------- MINIMIZE ----------
+        if diag_size > 0:
+            # Save exact restore sizes only once
+            if not getattr(self, "_diag_restore_sizes", None):
+                self._diag_restore_sizes = sizes[:]
+
+            # Collapse diagnostics fully
+            new_sizes = sizes[:]
+            freed = new_sizes[2]
+            new_sizes[2] = 0
+            new_sizes[1] += freed  # give space to center pane
+
+            splitter.setSizes(new_sizes)
+            return
+
+        # ---------- RESTORE ----------
+        if getattr(self, "_diag_restore_sizes", None):
+            splitter.setSizes(self._diag_restore_sizes)
+            self._diag_restore_sizes = None
+        else:
+            # Fallback if restore sizes somehow missing
+            splitter.setSizes([260, 900, 340])
+
+    def on_delete_template(self):
+        templates = self.templates.list_templates()
+        if not templates:
+            QtWidgets.QMessageBox.information(self, "Templates", "No templates saved yet.")
+            return
+
+        names = [f"{t.name}  [{t.template_id}]" for t in templates]
+        choice, ok = QtWidgets.QInputDialog.getItem(
+            self, "Delete Template", "Template:", names, 0, False
+        )
+        if not ok:
+            return
+
+        tid = choice.rsplit("[", 1)[-1].rstrip("]")
+        t = self.templates.templates[tid]
+
+        confirm = QtWidgets.QMessageBox.question(
+            self,
+            "Confirm Delete",
+            f"Delete template:\n\n{t.name}\n\nThis cannot be undone.",
+            QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No
+        )
+        if confirm != QtWidgets.QMessageBox.StandardButton.Yes:
+            return
+
+        self.templates.delete(t.template_id)
+        QtWidgets.QMessageBox.information(self, "Templates", f"Deleted: {t.name}")
+
+    def on_save_template(self):
+        item = self.script_tree.currentItem()
+        if not item:
+            return
+        block: Block = item.data(0, QtCore.Qt.ItemDataRole.UserRole)
+        name, ok = QtWidgets.QInputDialog.getText(self, "Template Name", "Name:")
+        if not ok or not name.strip():
+            return
+
+        tid = re.sub(r"[^A-Za-z0-9_]+", "_", name.strip()).lower()
+        self.templates.templates[tid] = BlockTemplateDef(
+            template_id=tid,
+            name=name.strip(),
+            root_block=block.to_dict(),
+        )
+        self.templates.save()
+        self.refresh_diagnostics()
+        
+    def ensure_event_timer_handler(self, timer_name: str, old_name: str | None = None, prefer_after_event: str = ""):
+        timer_name = (timer_name or "").strip()
+        if not timer_name:
+            return
+
+        old_name = (old_name or "").strip() or None
+
+        blocks = self.script_tree.rebuild_block_tree()
+
+        # ----------------------------
+        # Find EVENT_TIMER top-level
+        # ----------------------------
+        event_timer_idx = None
+        event_timer = None
+        for i, b in enumerate(blocks):
+            if b.type == BLOCK_EVENT and (b.params.get("event_name") or "").strip() == "EVENT_TIMER":
+                event_timer_idx = i
+                event_timer = b
+                break
+
+        # Create if missing
+        if event_timer is None:
+            event_timer = Block(
+                type=BLOCK_EVENT,
+                label="EVENT_TIMER",
+                params={"event_name": "EVENT_TIMER"},
+                children=[]
+            )
+            blocks.append(event_timer)
+        else:
+            # Force EVENT_TIMER to be last top-level block
+            if event_timer_idx is not None and event_timer_idx != len(blocks) - 1:
+                blocks.pop(event_timer_idx)
+                blocks.append(event_timer)
+
+        def _expr_for(name: str) -> str:
+            return f'$timer eq "{name}"'
+
+        def _ensure_stoptimer_quest_call(if_block: Block, tname: str):
+            want_fn = "stoptimer"
+            want_args = f'"{tname}"'
+
+            # Update existing quest::stoptimer if present
+            for ch in (if_block.children or []):
+                if ch.type == BLOCK_QUEST_CALL and (ch.params.get("quest_fn") or "") == want_fn:
+                    ch.params["args"] = want_args
+                    ch.label = f'quest::{want_fn}({want_args})'
+                    return
+
+
+            # Insert if missing
+            q = Block(
+                type=BLOCK_QUEST_CALL,
+                label=f'quest::{want_fn}({want_args})',
+                params={"quest_fn": want_fn, "args": want_args},
+                children=[]
+            )
+            if_block.children = (if_block.children or [])
+            if_block.children.insert(0, q)
+
+        # ----------------------------
+        # 1) If exact branch exists, keep it (but ensure quest::stoptimer matches)
+        # ----------------------------
+        want_expr = _expr_for(timer_name)
+        for c in event_timer.children:
+            if c.type == BLOCK_IF and (c.params.get("expr") or "").strip() == want_expr:
+                _ensure_stoptimer_quest_call(c, timer_name)
+                self.script_tree.load_from_blocks(blocks)
+                self.script_tree._emit_structure_changed()
+                return
+
+        # ----------------------------
+        # 2) If we're renaming, rewrite the old branch instead of adding a new one
+        # ----------------------------
+        if old_name:
+            old_expr = _expr_for(old_name)
+            for c in event_timer.children:
+                if c.type == BLOCK_IF and (c.params.get("expr") or "").strip() == old_expr:
+                    c.params["expr"] = want_expr
+                    c.label = f'if ({want_expr})'
+                    _ensure_stoptimer_quest_call(c, timer_name)
+
+                    self.script_tree.load_from_blocks(blocks)
+                    self.script_tree._emit_structure_changed()
+                    return
+
+        # ----------------------------
+        # 3) Otherwise create a new branch
+        # ----------------------------
+        if_block = Block(
+            type=BLOCK_IF,
+            label=f'if ({want_expr})',
+            params={"expr": want_expr},
+            children=[
+                Block(
+                    type=BLOCK_QUEST_CALL,
+                    label=f'quest::stoptimer("{timer_name}")',
+                    params={"quest_fn": "stoptimer", "args": f'"{timer_name}"'},
+                    children=[]
+                ),
+                Block(
+                    type=BLOCK_RAW_PERL,
+                    label="Raw Perl",
+                    params={"code": "# TODO: your timer logic here\n"},
+                    children=[]
+                )
+            ]
+        )
+        event_timer.children.append(if_block)
+
+        self.script_tree.load_from_blocks(blocks)
+        self.script_tree._emit_structure_changed()
+
+
+
+
+    def on_insert_template(self):
+        templates = self.templates.list_templates()
+        if not templates:
+            QtWidgets.QMessageBox.information(self, "Templates", "No templates saved yet.")
+            return
+
+        names = [t.name for t in templates]
+        choice, ok = QtWidgets.QInputDialog.getItem(self, "Insert Template", "Template:", names, 0, False)
+        if not ok:
+            return
+
+        t = next(x for x in templates if x.name == choice)
+        block = Block.from_dict(t.root_block)
+
+        parent = self.script_tree.currentItem()
+        self.script_tree.insert_block_object(block, parent_item=parent)
+        self.script_tree._emit_structure_changed()
+
+    def refresh_diagnostics(self):
+        blocks = self.script_tree.rebuild_block_tree()
+
+        issues = validate_blocks(blocks, self.registry)
+        self.diagnostics.set_validation(issues)
+
+        try:
+            perl = generate_perl(blocks, self.registry)
+        except Exception as e:
+            perl = f"# Live preview error:\n# {e}\n"
+        self.diagnostics.set_perl(perl)
+
+    def run_perl_check_into_panel(self):
+        """
+        On-demand perl -c, writes results into the DiagnosticsPanel tab (no modal).
+        """
+        blocks = self.script_tree.rebuild_block_tree()
+        perl = generate_perl(blocks, self.registry)
+
+        import subprocess
+        try:
+            proc = subprocess.run(
+                ["perl", "-c", "-"],
+                input=perl.encode("utf-8"),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                check=False,
+            )
+        except FileNotFoundError:
+            self.diagnostics.set_perl_check(
+                "Perl not found.\n\nInstall Perl and ensure `perl` is in PATH.",
+                ok=False
+            )
+            return
+
+        output = proc.stdout.decode("utf-8", errors="ignore")
+        self.diagnostics.set_perl_check(output, ok=(proc.returncode == 0))
 
     # --- Script tree search / highlight ---
 
@@ -3055,18 +3775,26 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _create_menu(self):
         bar = self.menuBar()
-
+        tmpl_menu = bar.addMenu("Templates")
+        
         file_menu = bar.addMenu("&File")
         act_new = file_menu.addAction("New Script")
         act_open = file_menu.addAction("Open Perl...")
         act_export = file_menu.addAction("Export Perl...")
         file_menu.addSeparator()
         act_quit = file_menu.addAction("Quit")
-
+        act_save_tmpl = tmpl_menu.addAction("Save Selected Block As Template")
+        act_insert_tmpl = tmpl_menu.addAction("Insert Template…")
+        tmpl_menu.addSeparator()
+        act_delete_tmpl = tmpl_menu.addAction("Delete Template…")
+        
         act_new.triggered.connect(self.on_new_script)
         act_open.triggered.connect(self.on_open_perl)
         act_export.triggered.connect(self.on_export_perl)
         act_quit.triggered.connect(QtWidgets.QApplication.quit)
+        act_save_tmpl.triggered.connect(self.on_save_template)
+        act_insert_tmpl.triggered.connect(self.on_insert_template)
+        act_delete_tmpl.triggered.connect(self.on_delete_template)
 
         # Edit menu: Undo / Redo / Delete
         edit_menu = bar.addMenu("&Edit")
@@ -3096,6 +3824,10 @@ class MainWindow(QtWidgets.QMainWindow):
 
         # View menu: theme switching
         view_menu = bar.addMenu("&View")
+        act_toggle_diag = view_menu.addAction("Toggle Diagnostics")
+        act_toggle_diag.setShortcut("F8")
+        act_toggle_diag.triggered.connect(self.toggle_diagnostics)
+        view_menu.addSeparator()
         act_dark = view_menu.addAction("Dark Theme")
         act_light = view_menu.addAction("Light Theme")
 
@@ -3181,30 +3913,91 @@ class MainWindow(QtWidgets.QMainWindow):
         self.props.set_block(block)
         self._snapshot_state()
         
-    def on_check_perl(self):
-        """
-        Generate Perl and run 'perl -c' to check syntax.
-        Shows the combined stdout/stderr in a dialog.
-        """
-        blocks = self.script_tree.rebuild_block_tree()
-        perl = generate_perl(blocks, self.registry)
+    def on_run_perl_c_panel(self):
+        # Generate Perl
+        try:
+            blocks = self.script_tree.rebuild_block_tree()
+            perl = generate_perl(blocks, self.registry)
+        except Exception as e:
+            self.diagnostics.set_perl_c_output_text(f"# Failed to generate Perl:\n# {e}\n")
+            self.diagnostics.set_perl_c_status(False)
+            return
 
         import subprocess
+        import shutil
+
+        perl_exe = shutil.which("perl")
+        if not perl_exe:
+            self.diagnostics.set_perl_c_output_text(
+                "Perl not found in PATH.\n\n"
+                "Install Strawberry Perl and ensure perl.exe is in PATH."
+            )
+            self.diagnostics.set_perl_c_status(False)
+            return
 
         try:
             proc = subprocess.run(
-                ["perl", "-c", "-"],
+                [perl_exe, "-c", "-"],
                 input=perl.encode("utf-8"),
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 check=False,
             )
-        except FileNotFoundError:
+            output = proc.stdout.decode("utf-8", errors="ignore")
+        except Exception as e:
+            self.diagnostics.set_perl_c_output_text(f"Failed to run perl -c:\n{e}")
+            self.diagnostics.set_perl_c_status(False)
+            return
+
+        self.diagnostics.set_perl_c_output_text(output)
+        self.diagnostics.set_perl_c_status(proc.returncode == 0)
+
+        # Optional: switch to the Perl -c tab automatically
+        self.diagnostics.setCurrentIndex(2)  # 0=Validation, 1=Live Perl, 2=Perl -c
+
+    def on_check_perl(self):
+        print("DEBUG: on_check_perl fired")
+        """
+        Generate Perl and run 'perl -c' to check syntax.
+        Shows stdout/stderr in a dialog.
+        """
+        try:
+            blocks = self.script_tree.rebuild_block_tree()
+            perl = generate_perl(blocks, self.registry)
+        except Exception as e:
+            QtWidgets.QMessageBox.critical(
+                self,
+                "Perl Generation Error",
+                f"Failed to generate Perl:\n\n{e}"
+            )
+            return
+
+        import subprocess
+        import shutil
+
+        perl_exe = shutil.which("perl")
+        if not perl_exe:
             QtWidgets.QMessageBox.warning(
                 self,
                 "Perl not found",
-                "Could not run 'perl -c'.\n\n"
-                "Make sure Perl is installed and available in your PATH."
+                "Perl was not found in PATH.\n\n"
+                "Install Strawberry Perl or add perl.exe to PATH."
+            )
+            return
+
+        try:
+            proc = subprocess.run(
+                [perl_exe, "-c", "-"],
+                input=perl.encode("utf-8"),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                check=False
+            )
+        except Exception as e:
+            QtWidgets.QMessageBox.critical(
+                self,
+                "Execution Error",
+                f"Failed to run perl:\n\n{e}"
             )
             return
 
@@ -3212,7 +4005,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         dlg = QtWidgets.QDialog(self)
         dlg.setWindowTitle("Perl Syntax Check")
-        dlg.resize(800, 400)
+        dlg.resize(900, 500)
 
         layout = QtWidgets.QVBoxLayout(dlg)
 
@@ -3221,25 +4014,17 @@ class MainWindow(QtWidgets.QMainWindow):
         text.setPlainText(output)
         layout.addWidget(text)
 
-        status_label = QtWidgets.QLabel()
-        status_label.setTextFormat(QtCore.Qt.TextFormat.RichText)
+        status = QtWidgets.QLabel()
+        status.setTextFormat(QtCore.Qt.TextFormat.RichText)
         if proc.returncode == 0:
-            status_label.setText(
-                "<b style='color:#0f9d58;'>Perl reports: syntax OK.</b>"
-            )
+            status.setText("<b style='color:green;'>Perl syntax OK</b>")
         else:
-            status_label.setText(
-                "<b style='color:#ea4335;'>Perl reported syntax errors. "
-                "Scroll the output above to see details.</b>"
-            )
-        layout.addWidget(status_label)
+            status.setText("<b style='color:red;'>Perl syntax errors detected</b>")
+        layout.addWidget(status)
 
-        btn_close = QtWidgets.QPushButton("Close")
-        btn_close.clicked.connect(dlg.accept)
-        layout.addWidget(
-            btn_close,
-            alignment=QtCore.Qt.AlignmentFlag.AlignRight
-        )
+        btn = QtWidgets.QPushButton("Close")
+        btn.clicked.connect(dlg.accept)
+        layout.addWidget(btn, alignment=QtCore.Qt.AlignmentFlag.AlignRight)
 
         dlg.exec()
 
